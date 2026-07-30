@@ -61,10 +61,34 @@ function Header({ title, subtitle, action }: { title: string; subtitle: string; 
 }
 function Login({ onLogin }: { onLogin(user: Item): void }) {
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [mode, setMode] = useState(() => {
+    if (location.pathname === "/reset-password") return "reset";
+    if (location.pathname === "/verify-email") return "verify";
+    return "sign-in";
+  });
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const form = new FormData(e.currentTarget);
+    setError("");
+    setMessage("");
     try {
+      if (mode === "forgot") {
+        await api("/api/auth/forgot-password", { method: "POST", body: JSON.stringify({ email: form.get("email") }) });
+        setMessage("If the account exists, a password-reset link has been sent.");
+        return;
+      }
+      if (mode === "reset") {
+        const token = new URLSearchParams(location.search).get("token");
+        if (!token) throw new Error("The password-reset link is missing its token");
+        await api("/api/auth/reset-password", {
+          method: "POST",
+          body: JSON.stringify({ token, password: form.get("password") }),
+        });
+        setMessage("Password reset. You can now sign in.");
+        setMode("sign-in");
+        return;
+      }
       const result = await api("/api/auth/sign-in", {
         method: "POST",
         body: JSON.stringify({ email: form.get("email"), password: form.get("password") }),
@@ -75,6 +99,17 @@ function Login({ onLogin }: { onLogin(user: Item): void }) {
       setError(err instanceof Error ? err.message : "Sign in failed");
     }
   };
+  useEffect(() => {
+    if (mode !== "verify") return;
+    const token = new URLSearchParams(location.search).get("token");
+    if (!token) {
+      setError("The verification link is missing its token");
+      return;
+    }
+    void api("/api/auth/verify-email", { method: "POST", body: JSON.stringify({ token }) })
+      .then(() => setMessage("Email verified. You can now sign in."))
+      .catch((reason) => setError(reason instanceof Error ? reason.message : "Verification failed"));
+  }, [mode]);
   return (
     <main className="grid min-h-screen place-items-center p-6">
       <form
@@ -90,19 +125,49 @@ function Login({ onLogin }: { onLogin(user: Item): void }) {
             <p className="text-xs text-slate-400">Administration console</p>
           </div>
         </div>
-        <label>
-          Email
-          <input required name="email" type="email" placeholder="admin@example.com" />
-        </label>
-        <label className="mt-4 block">
-          Password
-          <input required name="password" type="password" minLength={12} />
-        </label>
+        {mode === "verify" ? (
+          <p className="text-sm text-slate-400">Confirming your email verification link.</p>
+        ) : (
+          <>
+            {mode !== "reset" && (
+              <label>
+                Email
+                <input required name="email" type="email" placeholder="admin@example.com" />
+              </label>
+            )}
+            {mode !== "forgot" && (
+              <label className={mode === "reset" ? "block" : "mt-4 block"}>
+                {mode === "reset" ? "New password" : "Password"}
+                <input required name="password" type="password" minLength={12} />
+              </label>
+            )}
+          </>
+        )}
         {error && <p className="mt-3 text-sm text-rose-400">{error}</p>}
-        <Button className="mt-6 w-full">Sign in</Button>
-        <p className="mt-4 text-center text-xs text-slate-500">
-          Forgotten passwords use the configured PocketBase email delivery.
-        </p>
+        {message && <p className="mt-3 text-sm text-emerald-400">{message}</p>}
+        {mode !== "verify" && (
+          <Button className="mt-6 w-full">
+            {mode === "forgot" ? "Send reset link" : mode === "reset" ? "Reset password" : "Sign in"}
+          </Button>
+        )}
+        {mode === "sign-in" && (
+          <button
+            type="button"
+            className="mt-4 w-full text-center text-xs text-cyan-400 hover:text-cyan-300"
+            onClick={() => setMode("forgot")}
+          >
+            Forgot password?
+          </button>
+        )}
+        {(mode === "forgot" || mode === "reset" || mode === "verify") && (
+          <button
+            type="button"
+            className="mt-4 w-full text-center text-xs text-cyan-400 hover:text-cyan-300"
+            onClick={() => setMode("sign-in")}
+          >
+            Back to sign in
+          </button>
+        )}
       </form>
     </main>
   );

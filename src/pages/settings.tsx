@@ -69,7 +69,21 @@ export function SettingsPage({
               Email
               <input name="email" type="email" defaultValue={user.email} />
             </label>
-            <Button>Save profile</Button>
+            <div className="flex flex-wrap gap-2">
+              <Button>Save profile</Button>
+              {!user.verified && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={async () => {
+                    await request("/api/me/request-verification", { method: "POST" });
+                    setMessage("Verification email sent.");
+                  }}
+                >
+                  Resend verification
+                </Button>
+              )}
+            </div>
           </form>
         </section>
         <section className="rounded-xl border bg-slate-900/60 p-5">

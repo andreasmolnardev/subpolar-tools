@@ -498,6 +498,13 @@ app.patch("/api/me", async (c) => {
   if (input.email) await pb.collection("platform_users").requestVerification(input.email);
   return c.json(json(updated));
 });
+app.post("/api/me/request-verification", async (c) => {
+  const user = await requireUser(c);
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  await pb.collection("platform_users").requestVerification(String(user.email));
+  await audit(user.id, "request_email_verification", "account");
+  return c.json({ ok: true });
+});
 app.post("/api/me/change-password", async (c) => {
   const user = await requireUser(c);
   if (!user) return c.json({ error: "Unauthorized" }, 401);
