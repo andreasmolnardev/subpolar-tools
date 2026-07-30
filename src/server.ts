@@ -150,6 +150,22 @@ async function setup() {
     jsonField("sandboxPolicy"),
     number("maxWorkspaces"),
   ]);
+  await ensureCollection("role_tools", "base", [
+    text("roleId", true),
+    text("providerId", true),
+    text("operation", true),
+    text("exposedName", true),
+    text("description"),
+    jsonField("inputSchema"),
+    jsonField("inputMap"),
+    jsonField("fixedArgs"),
+    jsonField("outputMap"),
+  ]);
+  await ensureCollection("sandbox_secrets", "base", [
+    text("projectId", true),
+    text("name", true),
+    text("ciphertext", true),
+  ]);
   await ensureCollection("workspaces", "base", [
     text("projectId", true),
     text("roleId", true),
@@ -272,6 +288,51 @@ function validateProviderConfiguration(configuration: Record<string, unknown>) {
   if (auth && !["bearer", "header", "basic"].includes(String(auth.type ?? "bearer")))
     throw new Error("Provider authentication type is invalid");
   return configuration;
+}
+
+const gitProviders = ["Gitea", "GitHub", "GitLab"] as const;
+type GitProvider = (typeof gitProviders)[number];
+function validateSandboxPolicy(policy: Record<string, unknown>) {
+  const environment = policy.environment ?? {};
+  const caches = policy.caches ?? {};
+  const secretMounts = policy.secretMounts ?? [];
+  if (typeof environment !== "object" || environment === null || Array.isArray(environment))
+    throw new Error("Sandbox environment must be an object");
+  for (const [name, value] of Object.entries(environment))
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof value !== "string" || /[\r\n]/.test(value))
+      throw new Error("Sandbox environment values must be single-line strings with valid variable names");
+  if (typeof caches !== "object" || caches === null || Array.isArray(caches))
+    throw new Error("Sandbox caches must be an object");
+  for (const [name, path] of Object.entries(caches))
+    if (!/^[a-z0-9][a-z0-9_.-]*$/i.test(name) || typeof path !== "string" || !/^\/[\w./-]+$/.test(path))
+      throw new Error("Sandbox caches need a safe name and absolute container path");
+  if (!Array.isArray(secretMounts)) throw new Error("Sandbox secret mounts must be an array");
+  for (const mount of secretMounts) {
+    if (!mount || typeof mount !== "object") throw new Error("Sandbox secret mount is invalid");
+    const { secretId, mountPath } = mount as Record<string, unknown>;
+    if (typeof secretId !== "string" || typeof mountPath !== "string" || !/^\/run\/secrets\/[\w.-]+$/.test(mountPath))
+      throw new Error("Sandbox secrets must mount under /run/secrets");
+  }
+  if (policy.homeSize !== undefined && !/^\d+(?:[kmg])?$/i.test(String(policy.homeSize)))
+    throw new Error("Sandbox home size is invalid");
+  return policy;
+}
+function gitHeaders(provider: GitProvider, accessToken: string): Record<string, string> {
+  return provider === "GitLab" ? { "PRIVATE-TOKEN": accessToken } : { Authorization: `Bearer ${accessToken}` };
+}
+async function projectView(project: RecordData) {
+  const defaults = (project.sandboxDefaults ?? {}) as Record<string, any>;
+  const integration = defaults.gitIntegration as { baseUrl?: string; credentialId?: string } | undefined;
+  const { credentialId: _credentialId, ...safeIntegration } = integration ?? {};
+  return {
+    ...project,
+    sandboxDefaults: {
+      ...defaults,
+      gitIntegration: integration
+        ? { ...safeIntegration, credential: integration.credentialId ? "Configured" : "Not configured" }
+        : undefined,
+    },
+  };
 }
 
 async function providerView(provider: RecordData) {
@@ -565,10 +626,11 @@ function commandOutput(command: string[], timeout = 60000) {
   if (process.exitCode !== 0) throw new Error(process.stderr.toString() || `Command failed with ${process.exitCode}`);
   return process.stdout.toString();
 }
-function sandboxArgs(worktreePath: string, handle: string, policy: Record<string, unknown>) {
+async function sandboxArgs(worktreePath: string, handle: string, projectId: string, policy: Record<string, unknown>) {
+  validateSandboxPolicy(policy);
   const environment = (policy.environment ?? {}) as Record<string, unknown>;
   const caches = (policy.caches ?? {}) as Record<string, unknown>;
-  const secrets = (policy.secrets ?? {}) as Record<string, unknown>;
+  const secretMounts = (policy.secretMounts ?? []) as Array<{ secretId: string; mountPath: string }>;
   const args = [
     "run",
     "-d",
@@ -587,10 +649,6 @@ function sandboxArgs(worktreePath: string, handle: string, policy: Record<string
     "no-new-privileges",
     "--tmpfs",
     "/tmp:rw,nosuid,nodev,noexec,size=64m",
-    "--tmpfs",
-    "/home/subpolar:rw,nosuid,nodev,size=64m",
-    "-e",
-    "HOME=/home/subpolar",
     "-v",
     `${worktreePath}:/workspace`,
     "-w",
@@ -598,9 +656,27 @@ function sandboxArgs(worktreePath: string, handle: string, policy: Record<string
     "--network",
     policy.network ? "bridge" : "none",
   ];
+  if (policy.isolatedHome !== false) {
+    args.push(
+      "--tmpfs",
+      `/home/subpolar:rw,nosuid,nodev,size=${String(policy.homeSize ?? "64m")}`,
+      "-e",
+      "HOME=/home/subpolar",
+    );
+  }
   for (const [name, value] of Object.entries(environment)) args.push("-e", `${name}=${String(value)}`);
-  for (const [name, path] of Object.entries(caches)) args.push("-v", `subpolar-cache-${name}:${String(path)}`);
-  for (const [name, path] of Object.entries(secrets)) args.push("-v", `${String(path)}:/run/secrets/${name}:ro`);
+  for (const [name, path] of Object.entries(caches))
+    args.push("-v", `subpolar-cache-${projectId}-${name.toLowerCase().replace(/[^a-z0-9_.-]/g, "-")}:${String(path)}`);
+  const root = process.env.WORKSPACE_ROOT ?? "/var/lib/subpolar/workspaces";
+  for (const mount of secretMounts) {
+    const secret = await one("sandbox_secrets", mount.secretId);
+    if (secret.projectId !== projectId) throw new Error("Sandbox secret does not belong to this project");
+    const path = `${root}/secrets/${projectId}/${secret.id}`;
+    commandOutput(["mkdir", "-p", `${root}/secrets/${projectId}`]);
+    await Bun.write(path, await decryptSecret(String(secret.ciphertext)));
+    commandOutput(["chmod", "600", path]);
+    args.push("-v", `${path}:${mount.mountPath}:ro`);
+  }
   return args;
 }
 function workspaceTimeout(policy: Record<string, unknown>) {
@@ -1211,11 +1287,13 @@ app.get("/api/projects", async (c) => {
     workspaces = workspaces.filter((workspace) => projects.some((project) => project.id === workspace.projectId));
   }
   return c.json(
-    projects.map((project) => ({
-      ...project,
-      roleCount: roles.filter((role) => role.projectId === project.id).length,
-      workspaceCount: workspaces.filter((workspace) => workspace.projectId === project.id).length,
-    })),
+    await Promise.all(
+      projects.map(async (project) => ({
+        ...(await projectView(project)),
+        roleCount: roles.filter((role) => role.projectId === project.id).length,
+        workspaceCount: workspaces.filter((workspace) => workspace.projectId === project.id).length,
+      })),
+    ),
   );
 });
 app.post("/api/projects", async (c) => {
@@ -1234,6 +1312,7 @@ app.post("/api/projects", async (c) => {
       createDefaultDeveloperRole: z.boolean().default(true),
     })
     .parse(await c.req.json());
+  validateSandboxPolicy(input.sandboxDefaults);
   const project = await pb.collection("projects").create({ ...input, ownerId: user.id });
   if (input.createDefaultDeveloperRole)
     await pb.collection("roles").create({
@@ -1260,11 +1339,70 @@ app.post("/api/projects", async (c) => {
       maxWorkspaces: 5,
     });
   await audit(user.id, "create_project", project.id);
-  return c.json(json(project), 201);
+  return c.json(await projectView(json(project) as unknown as RecordData), 201);
 });
 app.get("/api/projects/:id/roles", async (c) => {
   if (!(await requireUser(c))) return c.json({ error: "Unauthorized" }, 401);
   return c.json(await list("roles", `projectId="${c.req.param("id")}"`));
+});
+app.get("/api/roles/:id/tools", async (c) => {
+  if (!(await requireUser(c))) return c.json({ error: "Unauthorized" }, 401);
+  return c.json(await list("role_tools", `roleId="${c.req.param("id")}"`));
+});
+app.post("/api/roles/:id/tools", async (c) => {
+  const user = await requireUser(c, true);
+  if (!user) return c.json({ error: "Forbidden" }, 403);
+  const role = await one("roles", c.req.param("id"));
+  const input = z
+    .object({
+      providerId: z.string(),
+      operation: z.string(),
+      exposedName: z.string().regex(/^[a-z][a-z0-9_.-]*$/),
+      description: z.string().default(""),
+      inputSchema: z.record(z.unknown()).default({}),
+      inputMap: z.record(z.string()).default({}),
+      fixedArgs: z.record(z.unknown()).default({}),
+      outputMap: z.record(z.string()).default({}),
+    })
+    .parse(await c.req.json());
+  if (!(role.toolIds as string[]).includes(input.providerId))
+    return c.json({ error: "Select this provider for the role first" }, 422);
+  const tool = await pb.collection("role_tools").create({ ...input, roleId: role.id });
+  await audit(user.id, "create_role_tool", tool.id);
+  return c.json(json(tool), 201);
+});
+app.patch("/api/roles/:id/tools/:toolId", async (c) => {
+  const user = await requireUser(c, true);
+  if (!user) return c.json({ error: "Forbidden" }, 403);
+  const tool = await one("role_tools", c.req.param("toolId"));
+  if (tool.roleId !== c.req.param("id")) return c.json({ error: "Tool does not belong to this role" }, 404);
+  const input = z
+    .object({
+      providerId: z.string().optional(),
+      operation: z.string().optional(),
+      exposedName: z
+        .string()
+        .regex(/^[a-z][a-z0-9_.-]*$/)
+        .optional(),
+      description: z.string().optional(),
+      inputSchema: z.record(z.unknown()).optional(),
+      inputMap: z.record(z.string()).optional(),
+      fixedArgs: z.record(z.unknown()).optional(),
+      outputMap: z.record(z.string()).optional(),
+    })
+    .parse(await c.req.json());
+  const updated = await pb.collection("role_tools").update(tool.id, input);
+  await audit(user.id, "update_role_tool", tool.id);
+  return c.json(json(updated));
+});
+app.delete("/api/roles/:id/tools/:toolId", async (c) => {
+  const user = await requireUser(c, true);
+  if (!user) return c.json({ error: "Forbidden" }, 403);
+  const tool = await one("role_tools", c.req.param("toolId"));
+  if (tool.roleId !== c.req.param("id")) return c.json({ error: "Tool does not belong to this role" }, 404);
+  await pb.collection("role_tools").delete(tool.id);
+  await audit(user.id, "delete_role_tool", tool.id);
+  return c.body(null, 204);
 });
 app.post("/api/projects/:id/roles", async (c) => {
   const user = await requireUser(c, true);
@@ -1278,6 +1416,7 @@ app.post("/api/projects/:id/roles", async (c) => {
       toolIds: z.array(z.string()).default([]),
     })
     .parse(await c.req.json());
+  validateSandboxPolicy(input.sandboxPolicy);
   const role = await pb.collection("roles").create({ ...input, projectId: c.req.param("id") });
   return c.json(json(role), 201);
 });
@@ -1294,9 +1433,10 @@ app.patch("/api/projects/:id", async (c) => {
       sandboxDefaults: z.record(z.unknown()).optional(),
     })
     .parse(await c.req.json());
+  if (input.sandboxDefaults) validateSandboxPolicy(input.sandboxDefaults);
   const project = await pb.collection("projects").update(c.req.param("id"), input);
   await audit(user.id, "update_project", project.id, input);
-  return c.json(json(project));
+  return c.json(await projectView(json(project) as unknown as RecordData));
 });
 app.patch("/api/roles/:id", async (c) => {
   const user = await requireUser(c, true);
@@ -1310,6 +1450,7 @@ app.patch("/api/roles/:id", async (c) => {
       sandboxPolicy: z.record(z.unknown()).optional(),
     })
     .parse(await c.req.json());
+  if (input.sandboxPolicy) validateSandboxPolicy(input.sandboxPolicy);
   const role = await pb.collection("roles").update(c.req.param("id"), input);
   await audit(user.id, "update_role", role.id, input);
   return c.json(json(role));
@@ -1320,6 +1461,9 @@ app.delete("/api/roles/:id", async (c) => {
   const role = await one("roles", c.req.param("id"));
   if ((await list("workspaces", `roleId="${role.id}"`)).length)
     return c.json({ error: "Release this role's workspaces first" }, 409);
+  await Promise.all(
+    (await list("role_tools", `roleId="${role.id}"`)).map((tool) => pb.collection("role_tools").delete(tool.id)),
+  );
   await pb.collection("roles").delete(role.id);
   await audit(user.id, "delete_role", role.id);
   return c.body(null, 204);
@@ -1345,8 +1489,74 @@ app.post("/api/projects/:id/git-credential", async (c) => {
       gitIntegration: { baseUrl: input.baseUrl.replace(/\/$/, ""), credentialId: credential.id },
     },
   });
-  await audit(user.id, "configure_git_credential", project.id);
-  return c.json({ project: json(updated), credential: { id: credential.id, name: credential.name } });
+  const prior = ((project.sandboxDefaults ?? {}) as Record<string, any>).gitIntegration?.credentialId;
+  if (prior) await pb.collection("credentials").delete(String(prior));
+  await audit(user.id, "rotate_git_credential", project.id);
+  return c.json({
+    project: await projectView(json(updated) as unknown as RecordData),
+    credential: { name: credential.name, masked: "Configured" },
+  });
+});
+app.get("/api/projects/:id/sandbox-secrets", async (c) => {
+  if (!(await requireUser(c, true))) return c.json({ error: "Forbidden" }, 403);
+  const secrets = await list("sandbox_secrets", `projectId="${c.req.param("id")}"`);
+  return c.json(secrets.map(({ ciphertext, ...secret }) => secret));
+});
+app.post("/api/projects/:id/sandbox-secrets", async (c) => {
+  const user = await requireUser(c, true);
+  if (!user) return c.json({ error: "Forbidden" }, 403);
+  const input = z
+    .object({ name: z.string().regex(/^[A-Za-z0-9_.-]+$/), value: z.string().min(1) })
+    .parse(await c.req.json());
+  const secret = await pb
+    .collection("sandbox_secrets")
+    .create({ projectId: c.req.param("id"), name: input.name, ciphertext: await encryptSecret(input.value) });
+  await audit(user.id, "create_sandbox_secret", secret.id);
+  const { ciphertext, ...view } = json(secret);
+  return c.json(view, 201);
+});
+app.patch("/api/projects/:id/sandbox-secrets/:secretId", async (c) => {
+  const user = await requireUser(c, true);
+  if (!user) return c.json({ error: "Forbidden" }, 403);
+  const secret = await one("sandbox_secrets", c.req.param("secretId"));
+  if (secret.projectId !== c.req.param("id")) return c.json({ error: "Secret does not belong to this project" }, 404);
+  const input = z.object({ value: z.string().min(1) }).parse(await c.req.json());
+  await pb.collection("sandbox_secrets").update(secret.id, { ciphertext: await encryptSecret(input.value) });
+  await audit(user.id, "rotate_sandbox_secret", secret.id);
+  return c.json({ id: secret.id, name: secret.name, masked: "Configured" });
+});
+app.delete("/api/projects/:id/sandbox-secrets/:secretId", async (c) => {
+  const user = await requireUser(c, true);
+  if (!user) return c.json({ error: "Forbidden" }, 403);
+  const secret = await one("sandbox_secrets", c.req.param("secretId"));
+  if (secret.projectId !== c.req.param("id")) return c.json({ error: "Secret does not belong to this project" }, 404);
+  await pb.collection("sandbox_secrets").delete(secret.id);
+  await audit(user.id, "delete_sandbox_secret", secret.id);
+  return c.body(null, 204);
+});
+app.post("/api/git/repositories", async (c) => {
+  if (!(await requireUser(c, true))) return c.json({ error: "Forbidden" }, 403);
+  const input = z
+    .object({ provider: z.enum(gitProviders), baseUrl: z.string().url(), token: z.string().min(1) })
+    .parse(await c.req.json());
+  const baseUrl = input.baseUrl.replace(/\/$/, "");
+  const endpoint =
+    input.provider === "GitHub"
+      ? `${baseUrl}/user/repos?per_page=100&sort=updated`
+      : input.provider === "GitLab"
+        ? `${baseUrl}/api/v4/projects?membership=true&per_page=100&order_by=last_activity_at`
+        : `${baseUrl}/api/v1/user/repos?limit=100`;
+  const response = await fetch(endpoint, {
+    headers: { ...gitHeaders(input.provider, input.token), Accept: "application/json" },
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!response.ok) return c.json({ error: `Repository lookup failed with ${response.status}` }, 422);
+  const repositories = ((await response.json()) as any[]).map((repository) => ({
+    name: repository.full_name ?? repository.path_with_namespace ?? repository.name,
+    url: repository.clone_url ?? repository.http_url_to_repo ?? repository.ssh_url_to_repo,
+    defaultBranch: repository.default_branch ?? "main",
+  }));
+  return c.json(repositories.filter((repository) => repository.url));
 });
 app.get("/api/projects/:id/workspaces", async (c) => {
   if (!(await requireUser(c, true))) return c.json({ error: "Forbidden" }, 403);
@@ -1446,7 +1656,13 @@ const createWorkspace = async (c: Context) => {
   if (agentCreated) {
     const policy = (role.sandboxPolicy ?? project.sandboxDefaults ?? {}) as Record<string, unknown>;
     const image = String(policy.image ?? "alpine:3.21");
-    const run = Bun.spawnSync(["docker", ...sandboxArgs(worktreePath, handle, policy), image, "sleep", "infinity"]);
+    const run = Bun.spawnSync([
+      "docker",
+      ...(await sandboxArgs(worktreePath, handle, project.id, policy)),
+      image,
+      "sleep",
+      "infinity",
+    ]);
     if (run.exitCode === 0) {
       sandboxId = run.stdout.toString().trim();
       sandboxState = "Running";
@@ -1498,7 +1714,7 @@ app.post("/api/workspaces/:id/start", async (c) => {
   const policy = (role.sandboxPolicy ?? project.sandboxDefaults ?? {}) as Record<string, unknown>;
   const result = Bun.spawnSync([
     "docker",
-    ...sandboxArgs(String(workspace.worktreePath), String(workspace.handle), policy),
+    ...(await sandboxArgs(String(workspace.worktreePath), String(workspace.handle), project.id, policy)),
     String(policy.image ?? "alpine:3.21"),
     "sleep",
     "infinity",
@@ -1664,6 +1880,26 @@ async function authorizedWorkspace(c: Context, capability: string) {
   await pb.collection("workspace_credentials").update(scoped.credential.id, { lastUsed: new Date().toISOString() });
   return scoped.workspace;
 }
+app.post("/api/v1/workspaces/:handle/tools/:tool", async (c) => {
+  const workspace = await authorizedWorkspace(c, "external.tools");
+  if (!workspace) return c.json({ error: "Unauthorized" }, 401);
+  const tool = (await list("role_tools", `roleId="${workspace.roleId}" && exposedName="${c.req.param("tool")}"`))[0];
+  if (!tool) return c.json({ error: "Tool not authorized" }, 404);
+  try {
+    const input = await c.req.json();
+    validateAdapter(input, tool.inputSchema as Record<string, any>);
+    const mapped: Record<string, unknown> = { ...(tool.fixedArgs as object) };
+    for (const [from, to] of Object.entries(tool.inputMap as Record<string, string>)) mapped[to] = input[from];
+    const output = await invokeProvider(
+      await one("providers", String(tool.providerId)),
+      String(tool.operation),
+      mapped,
+    );
+    return c.json({ output: mappedOutput(output, tool.outputMap as Record<string, string>) });
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Tool invocation failed" }, 422);
+  }
+});
 app.post("/api/v1/workspaces/:handle/files/read", async (c) => {
   const workspace = await authorizedWorkspace(c, "filesystem.read");
   if (!workspace) return c.json({ error: "Unauthorized" }, 401);
@@ -1757,7 +1993,7 @@ app.post("/api/v1/workspaces/:handle/pull-requests", async (c) => {
   if (!match) return c.json({ error: "Repository URL cannot be parsed" }, 422);
   const path = match[1];
   const headers = {
-    Authorization: `Bearer ${accessToken}`,
+    ...gitHeaders(project.gitProvider as GitProvider, accessToken),
     "Content-Type": "application/json",
     Accept: "application/json",
   };
