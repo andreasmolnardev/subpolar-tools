@@ -222,6 +222,13 @@ async function hasGrant(
     user.platformRole === "Admin" || Boolean((await list(collection, `userId="${user.id}" && ${field}="${id}"`))[0])
   );
 }
+async function canAccessAgent(user: RecordData, agent: RecordData) {
+  return (
+    user.platformRole === "Admin" ||
+    agent.ownerId === user.id ||
+    hasGrant(user, "user_agent_grants", "agentId", agent.id)
+  );
+}
 const list = async (collection: string, filter = "") =>
   json(
     await pb.collection(collection).getFullList({ filter: filter.replace(/([A-Za-z0-9_])=/g, "$1 = ") }),
@@ -1103,8 +1110,10 @@ app.post("/api/agents/:id/tools/:toolId/test", async (c) => {
   }
 });
 app.get("/api/agents/:id/contract", async (c) => {
-  if (!(await requireUser(c))) return c.json({ error: "Unauthorized" }, 401);
+  const user = await requireUser(c);
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
   const agent = await one("agents", c.req.param("id"));
+  if (!(await canAccessAgent(user, agent))) return c.json({ error: "Forbidden" }, 403);
   const tools = await list("agent_tools", `agentId="${agent.id}"`);
   return c.json({
     name: agent.name,
@@ -1116,6 +1125,15 @@ app.get("/api/agents/:id/contract", async (c) => {
       outputMap: tool.outputMap,
     })),
   });
+});
+app.get("/api/agents/:id/openapi.json", async (c) => {
+  const user = await requireUser(c);
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  const agent = await one("agents", c.req.param("id"));
+  if (!(await canAccessAgent(user, agent))) return c.json({ error: "Forbidden" }, 403);
+  return c.json(
+    agentOpenApiContract(agent, await list("agent_tools", `agentId="${agent.id}"`), new URL(c.req.url).origin),
+  );
 });
 app.post("/api/agents/:id/tools/:toolId/validate", async (c) => {
   if (!(await requireUser(c, true))) return c.json({ error: "Forbidden" }, 403);
@@ -1543,6 +1561,29 @@ async function invokeAgentTool(credential: RecordData, exposedName: string, inpu
   await pb.collection("agent_credentials").update(credential.id, { lastUsed: new Date().toISOString() });
   return mappedOutput(output, tool.outputMap as Record<string, string>);
 }
+function agentOpenApiContract(agent: RecordData, tools: RecordData[], origin: string) {
+  const paths = Object.fromEntries(
+    tools.map((tool) => [
+      `/tools/${encodeURIComponent(String(tool.exposedName))}`,
+      {
+        post: {
+          operationId: tool.exposedName,
+          summary: tool.description,
+          security: [{ bearerAuth: [] }],
+          requestBody: { required: true, content: { "application/json": { schema: tool.inputSchema || {} } } },
+          responses: { 200: { description: "Tool result" } },
+        },
+      },
+    ]),
+  );
+  return {
+    openapi: "3.1.0",
+    info: { title: `${agent.name} tools`, version: "1.0.0" },
+    servers: [{ url: `${origin}/api/v1` }],
+    paths,
+    components: { securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } } },
+  };
+}
 // Stateless harness endpoint. It accepts only an agent credential, never a web session.
 app.post("/api/v1/resolve/:tool", async (c) => {
   const authorized = await authorizedAgent(c.req.header("Authorization"));
@@ -1568,28 +1609,13 @@ app.post("/api/v1/tools/:tool", async (c) => {
 app.get("/api/v1/agents/:id/openapi.json", async (c) => {
   const authorized = await authorizedAgent(c.req.header("Authorization"));
   if (!authorized || authorized.agent.id !== c.req.param("id")) return c.json({ error: "Unauthorized" }, 401);
-  const tools = await list("agent_tools", `agentId="${authorized.agent.id}"`);
-  const paths = Object.fromEntries(
-    tools.map((tool) => [
-      `/tools/${encodeURIComponent(String(tool.exposedName))}`,
-      {
-        post: {
-          operationId: tool.exposedName,
-          summary: tool.description,
-          security: [{ bearerAuth: [] }],
-          requestBody: { required: true, content: { "application/json": { schema: tool.inputSchema || {} } } },
-          responses: { 200: { description: "Tool result" } },
-        },
-      },
-    ]),
+  return c.json(
+    agentOpenApiContract(
+      authorized.agent,
+      await list("agent_tools", `agentId="${authorized.agent.id}"`),
+      new URL(c.req.url).origin,
+    ),
   );
-  return c.json({
-    openapi: "3.1.0",
-    info: { title: `${authorized.agent.name} tools`, version: "1.0.0" },
-    servers: [{ url: new URL(c.req.url).origin + "/api/v1" }],
-    paths,
-    components: { securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } } },
-  });
 });
 app.post("/api/v1/mcp", async (c) => {
   const request = (await c.req.json()) as { id?: string | number; method?: string; params?: Record<string, any> };

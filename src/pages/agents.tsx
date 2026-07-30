@@ -22,6 +22,7 @@ export function AgentsPage({ request }: { request: Request }) {
   const [validation, setValidation] = useState<Record<string, RecordItem>>({});
   const [confirming, setConfirming] = useState<{ title: string; action: () => Promise<void> } | null>(null);
   const [testing, setTesting] = useState<RecordItem | null>(null);
+  const [copyMessage, setCopyMessage] = useState("");
 
   const load = async () => {
     const [nextAgents, nextProviders] = await Promise.all([request("/api/agents"), request("/api/providers")]);
@@ -141,6 +142,24 @@ export function AgentsPage({ request }: { request: Request }) {
         await load();
       },
     });
+  const copy = async (value: string, label: string) => {
+    await navigator.clipboard.writeText(value);
+    setCopyMessage(`${label} copied`);
+  };
+  const openApiContract = async () => {
+    if (!selected) return null;
+    return request(`/api/agents/${selected.id}/openapi.json`);
+  };
+  const downloadOpenApiContract = async () => {
+    if (!selected) return;
+    const blob = new Blob([JSON.stringify(await openApiContract(), null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `agent-${selected.id}-openapi.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div>
@@ -350,11 +369,55 @@ export function AgentsPage({ request }: { request: Request }) {
                 </div>
                 <div>
                   <h3 className="mb-3 text-sm font-medium text-slate-300">Final contract preview</h3>
-                  <p className="mb-2 break-all text-xs text-slate-500">
-                    MCP: {location.origin}/api/v1/mcp
-                    <br />
-                    OpenAPI: {location.origin}/api/v1/agents/{selected.id}/openapi.json
-                  </p>
+                  <div className="mb-3 space-y-2 text-xs">
+                    <div className="rounded border bg-slate-950/60 p-2">
+                      <p className="text-slate-400">MCP endpoint (Bearer profile token required)</p>
+                      <div className="mt-1 flex items-center gap-2">
+                        <code className="min-w-0 flex-1 break-all text-slate-300">{location.origin}/api/v1/mcp</code>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void copy(`${location.origin}/api/v1/mcp`, "MCP URL")}
+                        >
+                          Copy URL
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="rounded border bg-slate-950/60 p-2">
+                      <p className="text-slate-400">OpenAPI contract URL (Bearer profile token required)</p>
+                      <div className="mt-1 flex items-center gap-2">
+                        <code className="min-w-0 flex-1 break-all text-slate-300">
+                          {location.origin}/api/v1/agents/{selected.id}/openapi.json
+                        </code>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            void copy(`${location.origin}/api/v1/agents/${selected.id}/openapi.json`, "OpenAPI URL")
+                          }
+                        >
+                          Copy URL
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          void openApiContract().then((value) =>
+                            copy(JSON.stringify(value, null, 2), "OpenAPI contract"),
+                          )
+                        }
+                      >
+                        Copy contract
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => void downloadOpenApiContract()}>
+                        Download contract
+                      </Button>
+                      {copyMessage && <span className="self-center text-slate-400">{copyMessage}</span>}
+                    </div>
+                  </div>
                   <pre className="max-h-80 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-300">
                     {JSON.stringify(contract, null, 2)}
                   </pre>
