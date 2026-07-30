@@ -1,0 +1,16 @@
+{
+  "name": "@subpolar/cli",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "subpolar-tools": "src/index.ts"
+  },
+  "scripts": {
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.2"
+  }
+}

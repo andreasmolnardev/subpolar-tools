@@ -14,7 +14,9 @@
     "apps/web": {
       "name": "@subpolar/web",
       "dependencies": {
+        "@fontsource-variable/geist": "^5.3.0",
         "@radix-ui/react-alert-dialog": "^1.1.15",
+        "@radix-ui/react-dialog": "^1.1.23",
         "@radix-ui/react-slot": "^1.2.3",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
@@ -32,6 +34,16 @@
         "tailwindcss": "^3.4.17",
         "typescript": "^5.7.2",
         "vite": "^7.1.2",
+      },
+    },
+    "packages/cli": {
+      "name": "@subpolar/cli",
+      "bin": {
+        "subpolar-tools": "src/index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "^5.7.2",
       },
     },
     "packages/runtime": {
@@ -148,6 +160,8 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.28.1", "", { "os": "win32", "cpu": "x64" }, "sha512-bm4Mowrv+GXMlpWX++EcXw/iLyd1o3+bJkC2DkWXYVvgZCqD/bSj9ctZeAMC3cIxgjRVR2Dufaiu4YPxr5gW1A=="],
 
+    "@fontsource-variable/geist": ["@fontsource-variable/geist@5.3.0", "", {}, "sha512-j0m+vLQuG5XAYoHtGCVu0spvlGreR3EzpECUVzkFmI1mTVnAO38l/NEPDCFgZ177JxzYJCLSmTQibIiYPilGrA=="],
+
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 
     "@jridgewell/remapping": ["@jridgewell/remapping@2.3.5", "", { "dependencies": { "@jridgewell/gen-mapping": "^0.3.5", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-LI9u/+laYG4Ds1TDKSJW2YPrIlcVYOwi2fUC6xB43lueCjgxV4lffOCZCtYFiH6TNOX+tQKXx97T4IKHbhyHEQ=="],
@@ -251,6 +265,8 @@
     "@rollup/rollup-win32-x64-msvc": ["@rollup/rollup-win32-x64-msvc@4.62.3", "", { "os": "win32", "cpu": "x64" }, "sha512-MOG/3gTOn4Fwf574RVOaY61I5o6P90legkFADiTyn1hyjNydT+cerU2rLUwPdZkKKyJ+iT+K9p7WXK4LM1Ka6g=="],
 
     "@subpolar/api": ["@subpolar/api@workspace:services/api"],
+
+    "@subpolar/cli": ["@subpolar/cli@workspace:packages/cli"],
 
     "@subpolar/runtime": ["@subpolar/runtime@workspace:packages/runtime"],
 

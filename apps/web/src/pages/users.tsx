@@ -108,7 +108,7 @@ export function UsersPage({ request }: { request: Request }) {
         <div className="mb-5 rounded-lg border border-rose-800 bg-rose-950/40 p-3 text-sm text-rose-300">{error}</div>
       )}
       {showCreate && (
-        <form className="mb-6 grid gap-3 rounded-xl border bg-slate-900/60 p-5 md:grid-cols-2" onSubmit={create}>
+        <form className="mb-6 grid gap-3 rounded-xl border bg-slate-950/70 p-5 md:grid-cols-2" onSubmit={create}>
           <input required name="displayName" placeholder="Display name" />
           <input required name="email" type="email" placeholder="Email" />
           <select name="platformRole">
@@ -120,9 +120,9 @@ export function UsersPage({ request }: { request: Request }) {
         </form>
       )}
       <div className="grid gap-5 xl:grid-cols-[1fr_23rem]">
-        <section className="rounded-xl border bg-slate-900/60 p-5">
+        <section className="rounded-xl border bg-slate-950/70 p-5">
           <h2 className="flex items-center gap-2 font-medium">
-            <UserRound size={17} className="text-cyan-400" />
+            <UserRound size={17} className="text-blue-400" />
             Accounts
           </h2>
           <div className="mt-3 divide-y divide-slate-800">
@@ -162,9 +162,9 @@ export function UsersPage({ request }: { request: Request }) {
             ))}
           </div>
         </section>
-        <section className="rounded-xl border bg-slate-900/60 p-5">
+        <section className="rounded-xl border bg-slate-950/70 p-5">
           <h2 className="flex items-center gap-2 font-medium">
-            <History size={17} className="text-cyan-400" />
+            <History size={17} className="text-blue-400" />
             Security events
           </h2>
           <form
@@ -232,7 +232,7 @@ export function UsersPage({ request }: { request: Request }) {
         </section>
       </div>
       {selected && (
-        <section className="mt-5 rounded-xl border bg-slate-900/60 p-5">
+        <section className="mt-5 rounded-xl border bg-slate-950/70 p-5">
           <h2 className="font-medium">Sessions and access for {selected.displayName || selected.email}</h2>
           <div className="mt-3 space-y-2">
             {sessions.map((session) => (

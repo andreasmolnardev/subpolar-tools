@@ -341,6 +341,10 @@ function validateProviderConfiguration(configuration: Record<string, unknown>) {
     throw new Error("MCP command transport requires configuration.command as a non-empty command array");
   if (configuration.startup !== undefined && !["on-demand", "eager"].includes(String(configuration.startup)))
     throw new Error("MCP startup must be on-demand or eager");
+  if (configuration.runtime !== undefined && !["local", "docker"].includes(String(configuration.runtime)))
+    throw new Error("MCP runtime must be local or docker");
+  if (configuration.runtime === "docker" && (typeof configuration.image !== "string" || !configuration.image.trim()))
+    throw new Error("Docker MCP runtime requires configuration.image");
   const auth = configuration.auth as Record<string, unknown> | undefined;
   if (auth && !["bearer", "header", "basic"].includes(String(auth.type ?? "bearer")))
     throw new Error("Provider authentication type is invalid");
@@ -453,12 +457,26 @@ async function mcpSession(provider: RecordData) {
   const environment = configuration.environment;
   if (environment !== undefined && (typeof environment !== "object" || Array.isArray(environment)))
     throw new Error("MCP command environment must be an object");
+  const environmentValues = (environment ?? {}) as Record<string, string>;
+  const runtime = String(configuration.runtime ?? "local");
+  const cmd =
+    runtime === "docker"
+      ? [
+          dockerCommand,
+          "run",
+          "--rm",
+          "-i",
+          ...Object.entries(environmentValues).flatMap(([key, value]) => ["-e", `${key}=${value}`]),
+          String(configuration.image),
+          ...(command as string[]),
+        ]
+      : (command as string[]);
   const process = Bun.spawn({
-    cmd: command as string[],
+    cmd,
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...Bun.env, ...((environment ?? {}) as Record<string, string>) },
+    env: runtime === "docker" ? Bun.env : { ...Bun.env, ...environmentValues },
   });
   const session: McpSession = { process, pending: new Map(), nextId: 1, buffer: "", stderr: "" };
   mcpSessions.set(provider.id, session);
@@ -669,7 +687,15 @@ async function invokeProvider(provider: RecordData, operationName: string, input
     signal: AbortSignal.timeout(Number(configuration.timeout ?? 10000)),
   });
   const contentType = response.headers.get("content-type") ?? "";
-  const body = contentType.includes("json") ? await response.json() : await response.text();
+  const rawBody = await response.text();
+  let body: unknown = rawBody;
+  if (contentType.includes("json") || /^[\[{]/.test(rawBody.trim())) {
+    try {
+      body = JSON.parse(rawBody);
+    } catch {
+      body = rawBody;
+    }
+  }
   if (!response.ok)
     throw new Error(
       `OpenAPI request failed with ${response.status}: ${typeof body === "string" ? body : JSON.stringify(body)}`,

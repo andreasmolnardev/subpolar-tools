@@ -1,6 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { KeyRound, Monitor, ShieldCheck } from "lucide-react";
 import { Button } from "../components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
 
 type RecordItem = Record<string, any>;
 type Request = (path: string, options?: RequestInit) => Promise<any>;
@@ -55,20 +58,23 @@ export function SettingsPage({
         </div>
       )}
       <div className="grid max-w-4xl gap-5 lg:grid-cols-2">
-        <section className="rounded-xl border bg-slate-900/60 p-5">
-          <h2 className="flex items-center gap-2 font-medium">
-            <ShieldCheck size={17} className="text-cyan-400" />
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+            <ShieldCheck size={17} className="text-blue-400" />
             Profile
-          </h2>
-          <form className="mt-4 space-y-3" onSubmit={profile}>
-            <label className="block text-sm">
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+          <form className="space-y-3" onSubmit={profile}>
+            <Label className="block space-y-2">
               Display name
-              <input name="displayName" defaultValue={user.displayName || ""} />
-            </label>
-            <label className="block text-sm">
+              <Input name="displayName" defaultValue={user.displayName || ""} />
+            </Label>
+            <Label className="block space-y-2">
               Email
-              <input name="email" type="email" defaultValue={user.email} />
-            </label>
+              <Input name="email" type="email" defaultValue={user.email} />
+            </Label>
             <div className="flex flex-wrap gap-2">
               <Button>Save profile</Button>
               {!user.verified && (
@@ -85,29 +91,34 @@ export function SettingsPage({
               )}
             </div>
           </form>
-        </section>
-        <section className="rounded-xl border bg-slate-900/60 p-5">
-          <h2 className="flex items-center gap-2 font-medium">
-            <KeyRound size={17} className="text-cyan-400" />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <KeyRound size={17} className="text-blue-400" />
             Password
-          </h2>
-          <form className="mt-4 space-y-3" onSubmit={password}>
-            <label className="block text-sm">
+          </CardTitle>
+          </CardHeader>
+          <CardContent>
+          <form className="space-y-3" onSubmit={password}>
+            <Label className="block space-y-2">
               Current password
-              <input required name="currentPassword" type="password" />
-            </label>
-            <label className="block text-sm">
+              <Input required name="currentPassword" type="password" />
+            </Label>
+            <Label className="block space-y-2">
               New password
-              <input required name="password" minLength={12} type="password" />
-            </label>
+              <Input required name="password" minLength={12} type="password" />
+            </Label>
             <Button>Change password</Button>
           </form>
-        </section>
-        <section className="rounded-xl border bg-slate-900/60 p-5 lg:col-span-2">
+          </CardContent>
+        </Card>
+        <Card className="lg:col-span-2">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="flex items-center gap-2 font-medium">
-                <Monitor size={17} className="text-cyan-400" />
+                <Monitor size={17} className="text-blue-400" />
                 Active sessions
               </h2>
               <p className="mt-1 text-sm text-slate-400">
@@ -141,7 +152,7 @@ export function SettingsPage({
             ))}
             {!sessions.length && <p className="py-3 text-sm text-slate-500">No sessions found.</p>}
           </div>
-        </section>
+        </Card>
       </div>
     </div>
   );

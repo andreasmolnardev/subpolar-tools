@@ -176,16 +176,16 @@ export function AgentsPage({ request }: { request: Request }) {
         </Button>
       </div>
       {showCreate && (
-        <form className="mb-6 grid gap-3 rounded-xl border bg-slate-900/60 p-5 md:grid-cols-3" onSubmit={createAgent}>
+        <form className="mb-6 grid gap-3 rounded-xl border bg-slate-950/70 p-5 md:grid-cols-3" onSubmit={createAgent}>
           <input required name="name" placeholder="Profile name" />
           <input name="description" placeholder="Description" />
           <Button>Create profile</Button>
         </form>
       )}
       {secret && (
-        <div className="mb-6 rounded-xl border border-cyan-700 bg-slate-900 p-5">
+        <div className="mb-6 rounded-xl border border-blue-700 bg-slate-900 p-5">
           <p className="font-medium">Store this credential now. It will not be displayed again.</p>
-          <code className="mt-3 block overflow-auto rounded bg-slate-950 p-3 text-cyan-300">{secret}</code>
+          <code className="mt-3 block overflow-auto rounded bg-slate-950 p-3 text-blue-300">{secret}</code>
           <Button className="mt-3" variant="outline" onClick={() => setSecret("")}>
             I stored it
           </Button>
@@ -197,7 +197,7 @@ export function AgentsPage({ request }: { request: Request }) {
             <button
               key={agent.id}
               onClick={() => void select(agent)}
-              className={`w-full rounded-lg border p-4 text-left ${selected?.id === agent.id ? "border-cyan-500 bg-cyan-500/10" : "bg-slate-900/60 hover:bg-slate-900"}`}
+              className={`w-full rounded-lg border p-4 text-left ${selected?.id === agent.id ? "border-blue-500 bg-blue-500/10" : "bg-slate-950/70 hover:bg-slate-950"}`}
             >
               <div className="flex items-center justify-between">
                 <span className="font-medium">{agent.name}</span>
@@ -210,13 +210,13 @@ export function AgentsPage({ request }: { request: Request }) {
             <p className="rounded-lg border p-4 text-sm text-slate-400">Create a profile to expose provider tools.</p>
           )}
         </aside>
-        <section className="min-w-0 rounded-xl border bg-slate-900/60 p-5">
+                <section className="min-w-0 rounded-xl border bg-slate-950/70 p-5">
           {selected ? (
             <>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <h2 className="flex items-center gap-2 text-lg font-semibold">
-                    <Bot size={18} className="text-cyan-400" />
+                        <Bot size={18} className="text-blue-400" />
                     {selected.name}
                   </h2>
                   <p className="mt-1 text-sm text-slate-400">{selected.description || "No description"}</p>
@@ -316,7 +316,7 @@ export function AgentsPage({ request }: { request: Request }) {
                       {tools.map((tool) => (
                         <div key={tool.id} className="rounded-lg border bg-slate-950/60 p-3">
                           <div className="flex items-center justify-between gap-2">
-                            <p className="font-medium text-cyan-300">{tool.exposedName}</p>
+                            <p className="font-medium text-blue-300">{tool.exposedName}</p>
                             <div className="flex gap-1">
                               <Button variant="ghost" size="sm" onClick={() => void testTool(tool)}>
                                 <Play size={13} />

@@ -291,7 +291,7 @@ export function ProjectsPage({ request }: { request: Request }) {
         </Button>
       </div>
       {showProject && (
-        <form className="mb-6 grid gap-3 rounded-xl border bg-slate-900/60 p-5 md:grid-cols-2" onSubmit={submitProject}>
+        <form className="mb-6 grid gap-3 rounded-xl border bg-slate-950/70 p-5 md:grid-cols-2" onSubmit={submitProject}>
           <input required name="name" placeholder="Project name" />
           <input name="description" placeholder="Description" />
           <select name="gitProvider">
@@ -363,20 +363,20 @@ export function ProjectsPage({ request }: { request: Request }) {
             <button
               key={project.id}
               onClick={() => void select(project)}
-              className={`w-full rounded-lg border p-4 text-left ${selected?.id === project.id ? "border-cyan-500 bg-cyan-500/10" : "bg-slate-900/60 hover:bg-slate-900"}`}
+              className={`w-full rounded-lg border p-4 text-left ${selected?.id === project.id ? "border-blue-500 bg-blue-500/10" : "bg-slate-950/70 hover:bg-slate-950"}`}
             >
               <p className="font-medium">{project.name}</p>
               <p className="mt-1 truncate text-sm text-slate-500">{project.repository || "Local-only"}</p>
             </button>
           ))}
         </aside>
-        <section className="rounded-xl border bg-slate-900/60 p-5">
+          <section className="rounded-xl border bg-slate-950/70 p-5">
           {selected ? (
             <>
               <div className="flex flex-wrap justify-between gap-3">
                 <div>
                   <h2 className="flex items-center gap-2 text-lg font-semibold">
-                    <FolderGit2 size={18} className="text-cyan-400" />
+                    <FolderGit2 size={18} className="text-blue-400" />
                     {selected.name}
                   </h2>
                   <p className="mt-1 text-sm text-slate-400">
@@ -608,11 +608,11 @@ export function ProjectsPage({ request }: { request: Request }) {
                 </form>
               )}
               {workspaceSecret && (
-                <div className="mt-5 rounded-lg border border-cyan-700 bg-slate-950 p-4">
+                <div className="mt-5 rounded-lg border border-blue-700 bg-slate-950 p-4">
                   <p className="text-sm font-medium">
                     Store this workspace credential now. It will not be shown again.
                   </p>
-                  <code className="mt-2 block overflow-auto text-sm text-cyan-300">{workspaceSecret}</code>
+                  <code className="mt-2 block overflow-auto text-sm text-blue-300">{workspaceSecret}</code>
                   <Button className="mt-3" variant="outline" size="sm" onClick={() => setWorkspaceSecret("")}>
                     I stored it
                   </Button>
@@ -681,7 +681,7 @@ export function ProjectsPage({ request }: { request: Request }) {
                         </div>
                       </div>
                       <p className="mt-1 truncate text-xs text-slate-500">{(role.capabilities || []).join(", ")}</p>
-                      <p className="mt-1 text-xs text-cyan-400">
+                      <p className="mt-1 text-xs text-blue-400">
                         Providers:{" "}
                         {(role.toolIds || [])
                           .map((id: string) => providers.find((provider) => provider.id === id)?.name ?? id)

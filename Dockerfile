@@ -2,6 +2,7 @@ FROM oven/bun:1.3.13 AS build
 WORKDIR /app
 COPY package.json bun.lock* ./
 COPY apps/web/package.json ./apps/web/package.json
+COPY packages/cli/package.json ./packages/cli/package.json
 COPY packages/runtime/package.json ./packages/runtime/package.json
 COPY services/api/package.json ./services/api/package.json
 RUN bun install --frozen-lockfile
@@ -16,6 +17,7 @@ ARG TARGETARCH
 RUN curl -fsSL "https://github.com/pocketbase/pocketbase/releases/download/v${POCKETBASE_VERSION}/pocketbase_${POCKETBASE_VERSION}_linux_${TARGETARCH}.zip" -o /tmp/pb.zip && unzip /tmp/pb.zip -d /usr/local/bin && rm /tmp/pb.zip
 COPY package.json bun.lock* ./
 COPY apps/web/package.json ./apps/web/package.json
+COPY packages/cli/package.json ./packages/cli/package.json
 COPY packages/runtime/package.json ./packages/runtime/package.json
 COPY services/api/package.json ./services/api/package.json
 RUN bun install --production --frozen-lockfile

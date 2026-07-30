@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import "@fontsource-variable/geist";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -7,7 +8,6 @@ import {
   Cable,
   FolderGit2,
   KeyRound,
-  LayoutDashboard,
   LogOut,
   Plus,
   Settings,
@@ -15,7 +15,9 @@ import {
   Users,
 } from "lucide-react";
 import { Button } from "./components/ui/button";
-import { ConfirmDialog } from "./components/ui/dialog";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "./components/ui/card";
+import { Input } from "./components/ui/input";
+import { Label } from "./components/ui/label";
 import { AgentsPage } from "./pages/agents";
 import { ProjectsPage } from "./pages/projects";
 import { SettingsPage } from "./pages/settings";
@@ -25,7 +27,7 @@ import "./web.css";
 
 type Item = Record<string, any>;
 const api = async (path: string, options: RequestInit = {}) => {
-  const token = localStorage.getItem("subpolar-token");
+  const token = localStorage.getItem("subpolar-token") ?? sessionStorage.getItem("subpolar-token");
   const res = await fetch(path, {
     ...options,
     headers: {
@@ -38,16 +40,12 @@ const api = async (path: string, options: RequestInit = {}) => {
   return res.status === 204 ? null : res.json();
 };
 const nav = [
-  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "tools", label: "All Tools", icon: Cable },
   { id: "agents", label: "Agents", icon: Bot },
   { id: "projects", label: "Projects", icon: FolderGit2 },
   { id: "users", label: "Users", icon: Users },
   { id: "settings", label: "Settings", icon: Settings },
 ];
-function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <section className={`rounded-xl border bg-slate-900/60 p-5 ${className}`}>{children}</section>;
-}
 function Header({ title, subtitle, action }: { title: string; subtitle: string; action?: ReactNode }) {
   return (
     <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
@@ -97,7 +95,10 @@ function Login({ onLogin }: { onLogin(user: Item): void }) {
           persistent: form.get("persistent") === "on",
         }),
       });
-      localStorage.setItem("subpolar-token", result.token);
+      const storage = form.get("persistent") === "on" ? localStorage : sessionStorage;
+      const otherStorage = storage === localStorage ? sessionStorage : localStorage;
+      otherStorage.removeItem("subpolar-token");
+      storage.setItem("subpolar-token", result.token);
       onLogin(result.user);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign in failed");
@@ -116,53 +117,55 @@ function Login({ onLogin }: { onLogin(user: Item): void }) {
   }, [mode]);
   return (
     <main className="grid min-h-screen place-items-center p-6">
-      <form
-        onSubmit={submit}
-        className="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900 p-7 shadow-2xl"
-      >
-        <div className="mb-7 flex items-center gap-3">
-          <div className="grid h-10 w-10 place-items-center rounded-lg bg-cyan-400 text-slate-950">
-            <Boxes size={22} />
-          </div>
-          <div>
-            <h1 className="font-semibold">Subpolar Tools</h1>
-            <p className="text-xs text-slate-400">Administration console</p>
-          </div>
-        </div>
+      <form onSubmit={submit} className="w-full max-w-sm">
+        <Card className="shadow-2xl shadow-blue-950/30">
+          <CardHeader>
+            <div className="flex items-center gap-3">
+              <div className="grid h-10 w-10 place-items-center rounded-lg bg-blue-500 text-white shadow-lg shadow-blue-950/40">
+                <Boxes size={22} />
+              </div>
+              <div>
+                <CardTitle>Subpolar Tools</CardTitle>
+                <CardDescription className="mt-1">Administration console</CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
         {mode === "verify" ? (
           <p className="text-sm text-slate-400">Confirming your email verification link.</p>
         ) : (
           <>
             {mode !== "reset" && (
-              <label>
+              <Label className="block space-y-2">
                 Email
-                <input required name="email" type="email" placeholder="admin@example.com" />
-              </label>
+                <Input required name="email" type="email" placeholder="admin@example.com" />
+              </Label>
             )}
             {mode !== "forgot" && (
-              <label className={mode === "reset" ? "block" : "mt-4 block"}>
+              <Label className={mode === "reset" ? "block space-y-2" : "mt-4 block space-y-2"}>
                 {mode === "reset" ? "New password" : "Password"}
-                <input required name="password" type="password" minLength={12} />
-              </label>
+                <Input required name="password" type="password" minLength={12} />
+              </Label>
             )}
             {mode === "sign-in" && (
-              <label className="mt-4 flex items-center gap-2 text-sm">
+              <Label className="mt-4 flex items-center gap-2 text-sm">
                 <input name="persistent" type="checkbox" className="h-4 w-4" /> Keep me signed in
-              </label>
+              </Label>
             )}
           </>
         )}
         {error && <p className="mt-3 text-sm text-rose-400">{error}</p>}
         {message && <p className="mt-3 text-sm text-emerald-400">{message}</p>}
-        {mode !== "verify" && (
-          <Button className="mt-6 w-full">
+          </CardContent>
+          {mode !== "verify" && (
+            <CardFooter className="flex-col gap-3">
+            <Button className="w-full">
             {mode === "forgot" ? "Send reset link" : mode === "reset" ? "Reset password" : "Sign in"}
-          </Button>
-        )}
+            </Button>
         {mode === "sign-in" && (
           <button
             type="button"
-            className="mt-4 w-full text-center text-xs text-cyan-400 hover:text-cyan-300"
+             className="w-full text-center text-xs text-blue-400 hover:text-blue-300"
             onClick={() => setMode("forgot")}
           >
             Forgot password?
@@ -171,12 +174,15 @@ function Login({ onLogin }: { onLogin(user: Item): void }) {
         {(mode === "forgot" || mode === "reset" || mode === "verify") && (
           <button
             type="button"
-            className="mt-4 w-full text-center text-xs text-cyan-400 hover:text-cyan-300"
+             className="w-full text-center text-xs text-blue-400 hover:text-blue-300"
             onClick={() => setMode("sign-in")}
           >
             Back to sign in
           </button>
         )}
+            </CardFooter>
+          )}
+        </Card>
       </form>
     </main>
   );
@@ -236,7 +242,7 @@ function Tools() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2 font-medium">
-                  <Cable size={16} className="text-cyan-400" />
+                  <Cable size={16} className="text-blue-400" />
                   {p.name}
                   <span className="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-400">{p.kind}</span>
                 </div>
@@ -305,9 +311,9 @@ function Agents() {
         </Card>
       )}
       {secret && (
-        <Card className="mb-6 border-cyan-700">
+        <Card className="mb-6 border-blue-700">
           <p className="font-medium">Copy this credential now. It will not be shown again.</p>
-          <code className="mt-3 block overflow-auto rounded bg-slate-950 p-3 text-cyan-300">{secret}</code>
+          <code className="mt-3 block overflow-auto rounded bg-slate-950 p-3 text-blue-300">{secret}</code>
           <Button className="mt-3" variant="outline" onClick={() => setSecret("")}>
             I stored it
           </Button>
@@ -423,7 +429,7 @@ function Projects() {
                 <span>
                   <b>{p.workspaceCount}</b> workspaces
                 </span>
-                <span className="text-cyan-400">{p.gitProvider}</span>
+                <span className="text-blue-400">{p.gitProvider}</span>
               </div>
             </div>
           </Card>
@@ -490,7 +496,7 @@ function Dashboard() {
           ["Projects", counts.projects, FolderGit2],
         ].map(([label, count, Icon]: any) => (
           <Card key={label}>
-            <Icon className="text-cyan-400" />
+            <Icon className="text-blue-400" />
             <p className="mt-6 text-3xl font-semibold">{count}</p>
             <p className="text-sm text-slate-400">{label}</p>
           </Card>
@@ -519,12 +525,15 @@ function Empty({ text }: { text: string }) {
 }
 function App() {
   const [user, setUser] = useState<Item | null>(null);
-  const [page, setPage] = useState("dashboard");
+  const [page, setPage] = useState("tools");
   useEffect(() => {
-    if (localStorage.getItem("subpolar-token"))
+    if (localStorage.getItem("subpolar-token") || sessionStorage.getItem("subpolar-token"))
       api("/api/me")
         .then(setUser)
-        .catch(() => localStorage.removeItem("subpolar-token"));
+         .catch(() => {
+           localStorage.removeItem("subpolar-token");
+           sessionStorage.removeItem("subpolar-token");
+         });
   }, []);
   if (!user) return <Login onLogin={setUser} />;
   const Page =
@@ -538,12 +547,12 @@ function App() {
             ? () => <UsersPage request={api} />
             : page === "settings"
               ? () => <SettingsPage request={api} user={user} onUser={setUser} />
-              : Dashboard;
+               : () => <ToolsPage request={api} />;
   return (
     <div className="min-h-screen md:flex">
-      <aside className="flex w-full shrink-0 flex-col border-b border-slate-800 bg-slate-950 md:sticky md:top-0 md:h-screen md:w-64 md:border-b-0 md:border-r">
+      <aside className="flex w-full shrink-0 flex-col border-b border-blue-950/80 bg-[#01030a] md:sticky md:top-0 md:h-screen md:w-64 md:border-b-0 md:border-r">
         <div className="flex items-center gap-3 p-5">
-          <div className="grid h-8 w-8 place-items-center rounded bg-cyan-400 text-slate-950">
+          <div className="grid h-8 w-8 place-items-center rounded bg-blue-500 text-white shadow-md shadow-blue-950/40">
             <Boxes size={18} />
           </div>
           <b>Subpolar Tools</b>
@@ -553,7 +562,7 @@ function App() {
             <button
               key={id}
               onClick={() => setPage(id)}
-              className={`flex shrink-0 items-center gap-3 rounded-md px-3 py-2 text-sm md:mb-1 md:w-full ${page === id ? "bg-slate-800 text-cyan-300" : "text-slate-400 hover:bg-slate-900 hover:text-slate-100"}`}
+               className={`flex shrink-0 items-center gap-3 rounded-md px-3 py-2 text-sm md:mb-1 md:w-full ${page === id ? "bg-blue-950/70 text-blue-300" : "text-slate-400 hover:bg-blue-950/40 hover:text-slate-100"}`}
             >
               <Icon size={17} />
               {label}
@@ -565,7 +574,8 @@ function App() {
           <button
             onClick={() => {
               api("/api/auth/sign-out", { method: "POST" });
-              localStorage.removeItem("subpolar-token");
+               localStorage.removeItem("subpolar-token");
+               sessionStorage.removeItem("subpolar-token");
               setUser(null);
             }}
             className="mt-2 flex items-center gap-2 text-xs text-slate-400 hover:text-white"

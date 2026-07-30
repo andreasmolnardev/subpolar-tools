@@ -2,7 +2,7 @@ services:
   subpolar:
     build: .
     ports:
-      - "3000:3000"
+      - "3005:3000"
     environment:
       SUBPOLAR_ADMIN_EMAIL: ${SUBPOLAR_ADMIN_EMAIL:?set in .env}
       SUBPOLAR_ADMIN_PASSWORD: ${SUBPOLAR_ADMIN_PASSWORD:?set in .env}

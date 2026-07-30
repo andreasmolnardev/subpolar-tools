@@ -1,7 +1,19 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Cable, Power, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "../components/ui/button";
-import { ConfirmDialog } from "../components/ui/dialog";
+import {
+  ConfirmDialog,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+  DialogTrigger,
+} from "../components/ui/dialog";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Select } from "../components/ui/select";
+import { Textarea } from "../components/ui/textarea";
 
 type RecordItem = Record<string, any>;
 type Request = (path: string, options?: RequestInit) => Promise<any>;
@@ -10,6 +22,9 @@ export function ToolsPage({ request }: { request: Request }) {
   const [providers, setProviders] = useState<RecordItem[]>([]);
   const [selected, setSelected] = useState<RecordItem | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [createMode, setCreateMode] = useState<"form" | "json">("form");
+  const [jsonInput, setJsonInput] = useState("");
+  const [integrationKind, setIntegrationKind] = useState("OpenAPI");
   const [deleting, setDeleting] = useState<RecordItem | null>(null);
   const [showRotate, setShowRotate] = useState(false);
   const [error, setError] = useState("");
@@ -24,6 +39,21 @@ export function ToolsPage({ request }: { request: Request }) {
     setError("");
     const form = new FormData(event.currentTarget);
     try {
+      if (createMode === "json") {
+        const parsed = JSON.parse(String(form.get("providerJson") || ""));
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("Provider JSON must be an object");
+        }
+        const provider = await request("/api/providers", {
+          method: "POST",
+          body: JSON.stringify(parsed),
+        });
+        setSelected(provider);
+        setShowCreate(false);
+        setJsonInput("");
+        await load();
+        return;
+      }
       const command = String(form.get("command") || "");
       const provider = await request("/api/providers", {
         method: "POST",
@@ -31,12 +61,14 @@ export function ToolsPage({ request }: { request: Request }) {
           name: form.get("name"),
           kind: form.get("kind"),
           endpoint: form.get("endpoint"),
-          configuration: {
-            timeout: Number(form.get("timeout")),
-            transport: form.get("transport"),
-            startup: form.get("startup"),
-            environment: form.get("environment") ? JSON.parse(String(form.get("environment"))) : {},
-            command: command ? JSON.parse(command) : undefined,
+           configuration: {
+             timeout: Number(form.get("timeout")),
+             transport: integrationKind === "MCP API" ? "http" : integrationKind === "OpenAPI" ? undefined : "command",
+             runtime: integrationKind === "MCP Docker" ? "docker" : "local",
+             startup: form.get("startup"),
+             environment: form.get("environment") ? JSON.parse(String(form.get("environment"))) : {},
+             command: command ? JSON.parse(command) : undefined,
+             image: form.get("image") || undefined,
             schemaUrl: form.get("schemaUrl"),
             schema: form.get("schema") ? JSON.parse(String(form.get("schema"))) : undefined,
             headers: form.get("headers") ? JSON.parse(String(form.get("headers"))) : {},
@@ -126,44 +158,189 @@ export function ToolsPage({ request }: { request: Request }) {
           <h1 className="text-2xl font-semibold">All Tools</h1>
           <p className="mt-1 text-sm text-slate-400">Centralized MCP and OpenAPI providers, schemas, and health.</p>
         </div>
-        <Button onClick={() => setShowCreate(!showCreate)}>Add provider</Button>
-      </div>
+         <Dialog open={showCreate} onOpenChange={setShowCreate}>
+           <DialogTrigger asChild>
+             <Button>Add provider</Button>
+           </DialogTrigger>
+           <DialogContent>
+             <div className="mb-5">
+               <DialogTitle className="text-xl font-semibold">Add tool provider</DialogTitle>
+               <DialogDescription className="mt-1 text-sm text-slate-400">
+                 Connect an OpenAPI service or MCP server. Fields update for the selected integration.
+               </DialogDescription>
+             </div>
+              <div className="mb-5 flex flex-wrap items-center gap-3 text-xs">
+                <button
+                  type="button"
+                  className="text-blue-400 underline-offset-4 hover:text-blue-300 hover:underline"
+                  onClick={() => setCreateMode(createMode === "json" ? "form" : "json")}
+                >
+                  {createMode === "json" ? "Use guided setup" : "Add from JSON"}
+                </button>
+                <a
+                  className="text-slate-500 underline-offset-4 hover:text-slate-300 hover:underline"
+                  href="/docs/configuration/toolservers.md"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  JSON syntax docs
+                </a>
+              </div>
+             {createMode === "json" ? (
+               <form className="grid gap-4" onSubmit={create}>
+                 <Label className="space-y-2">
+                   Provider JSON
+                   <Textarea
+                     required
+                     name="providerJson"
+                     value={jsonInput}
+                     onChange={(event) => setJsonInput(event.target.value)}
+                     className="min-h-80 font-mono text-xs"
+                     placeholder={'{\n  "name": "Weather tools",\n  "kind": "OpenAPI",\n  "endpoint": "https://api.example.com",\n  "configuration": {}\n}'}
+                   />
+                 </Label>
+                 <p className="text-xs text-slate-500">
+                   Paste the complete provider object. Secrets are encrypted by the API when included as credentials.
+                 </p>
+                 <div className="flex justify-end gap-2 pt-2">
+                   <DialogClose asChild>
+                     <Button type="button" variant="outline">Cancel</Button>
+                   </DialogClose>
+                   <Button>Import provider</Button>
+                 </div>
+               </form>
+             ) : (
+             <form className="grid gap-4" onSubmit={create}>
+               <div className="grid gap-4 sm:grid-cols-2">
+                 <Label className="space-y-2">
+                   Display name
+                   <Input required name="name" placeholder="My tools" />
+                 </Label>
+                 <Label className="space-y-2">
+                   Integration type
+                   <Select
+                     name="kind"
+                     value={integrationKind}
+                     onChange={(event) => setIntegrationKind(event.target.value)}
+                   >
+                     <option>OpenAPI</option>
+                     <option>MCP API</option>
+                     <option>MCP Local</option>
+                     <option>MCP Docker</option>
+                   </Select>
+                 </Label>
+               </div>
+
+                {integrationKind === "OpenAPI" ? (
+                 <div className="grid gap-4 rounded-lg border border-blue-950/80 bg-blue-950/20 p-4">
+                   <p className="text-sm font-medium text-blue-200">OpenAPI connection</p>
+                   <Label className="space-y-2">
+                     Service endpoint
+                     <Input name="endpoint" required placeholder="https://api.example.com" />
+                   </Label>
+                   <Label className="space-y-2">
+                     Schema URL <span className="font-normal text-slate-500">optional</span>
+                     <Input name="schemaUrl" placeholder="Defaults to the service endpoint" />
+                   </Label>
+                   <Label className="space-y-2">
+                     Inline schema <span className="font-normal text-slate-500">optional JSON</span>
+                     <Textarea name="schema" placeholder='{"openapi":"3.0.0","paths":{}}' />
+                   </Label>
+                 </div>
+                ) : (
+                  <div className="grid gap-4 rounded-lg border border-blue-950/80 bg-blue-950/20 p-4">
+                    <p className="text-sm font-medium text-blue-200">
+                      {integrationKind === "MCP API" ? "MCP API connection" : integrationKind === "MCP Docker" ? "MCP Docker container" : "MCP local process"}
+                    </p>
+                    {integrationKind === "MCP API" ? (
+                      <Label className="space-y-2">
+                        MCP HTTP endpoint
+                        <Input name="endpoint" required placeholder="https://mcp.example.com" />
+                      </Label>
+                    ) : (
+                      <>
+                        {integrationKind === "MCP Docker" && (
+                          <Label className="space-y-2">
+                            Docker image
+                            <Input name="image" required placeholder="ghcr.io/example/mcp-server:latest" />
+                          </Label>
+                        )}
+                        <Label className="space-y-2">
+                          {integrationKind === "MCP Docker" ? "Container command array" : "Local command array"}
+                          <Input name="command" required placeholder='["server", "--stdio"]' />
+                        </Label>
+                       <div className="grid gap-4 sm:grid-cols-2">
+                         <Label className="space-y-2">
+                           Startup
+                           <Select name="startup">
+                             <option value="on-demand">Start on demand</option>
+                             <option value="eager">Start when saved</option>
+                           </Select>
+                         </Label>
+                         <Label className="space-y-2">
+                           Environment JSON
+                           <Input name="environment" placeholder='{"API_URL":"..."}' />
+                         </Label>
+                       </div>
+                     </>
+                   )}
+                 </div>
+               )}
+
+               <div className="grid gap-4 rounded-lg border border-blue-950/80 p-4">
+                 <p className="text-sm font-medium">Authentication and options</p>
+                 <div className="grid gap-4 sm:grid-cols-2">
+                   <Label className="space-y-2">
+                     Authentication
+                     <Select name="authType">
+                       <option value="bearer">Bearer token</option>
+                       <option value="header">Custom header</option>
+                       <option value="basic">Basic token</option>
+                     </Select>
+                   </Label>
+                   <Label className="space-y-2">
+                     Timeout (ms)
+                     <Input name="timeout" type="number" defaultValue="10000" />
+                   </Label>
+                 </div>
+                 <div className="grid gap-4 sm:grid-cols-2">
+                   <Label className="space-y-2">
+                     Credential name
+                     <Input name="credentialName" placeholder="Production API" />
+                   </Label>
+                   <Label className="space-y-2">
+                     Secret
+                     <Input name="credentialSecret" type="password" placeholder="Stored encrypted" />
+                   </Label>
+                 </div>
+                 <div className="grid gap-4 sm:grid-cols-2">
+                   <Label className="space-y-2">
+                     Header name <span className="font-normal text-slate-500">for custom auth</span>
+                     <Input name="authHeader" placeholder="X-API-Key" />
+                   </Label>
+                   <Label className="space-y-2">
+                     Auth prefix <span className="font-normal text-slate-500">optional</span>
+                     <Input name="authPrefix" placeholder="Bearer" />
+                   </Label>
+                 </div>
+                 <Label className="space-y-2">
+                   Additional headers JSON <span className="font-normal text-slate-500">optional</span>
+                   <Textarea name="headers" placeholder='{"X-Client":"subpolar"}' />
+                 </Label>
+               </div>
+               <div className="flex justify-end gap-2 pt-2">
+                 <DialogClose asChild>
+                   <Button type="button" variant="outline">Cancel</Button>
+                 </DialogClose>
+                 <Button>Save and discover</Button>
+               </div>
+             </form>
+             )}
+           </DialogContent>
+         </Dialog>
+       </div>
       {error && (
         <div className="mb-5 rounded-lg border border-rose-800 bg-rose-950/40 p-3 text-sm text-rose-300">{error}</div>
-      )}
-      {showCreate && (
-        <form className="mb-6 grid gap-3 rounded-xl border bg-slate-900/60 p-5 md:grid-cols-2" onSubmit={create}>
-          <input required name="name" placeholder="Display name" />
-          <select name="kind">
-            <option>OpenAPI</option>
-            <option>MCP</option>
-          </select>
-          <input name="endpoint" placeholder="Base URL or MCP HTTP endpoint (not needed for command)" />
-          <input name="schemaUrl" placeholder="OpenAPI schema URL (defaults to endpoint)" />
-          <textarea name="schema" placeholder="Inline OpenAPI JSON (optional)" />
-          <select name="transport">
-            <option value="http">HTTP transport</option>
-            <option value="command">MCP command/stdio</option>
-          </select>
-          <input name="command" placeholder='Command array, e.g. ["npx","-y","server"]' />
-          <select name="startup">
-            <option value="on-demand">Start on demand</option>
-            <option value="eager">Start when saved</option>
-          </select>
-          <textarea name="environment" placeholder='Command environment JSON, e.g. {"API_URL":"..."}' />
-          <input name="timeout" type="number" defaultValue="10000" />
-          <input name="credentialName" placeholder="Credential reference" />
-          <select name="authType">
-            <option value="bearer">Bearer token</option>
-            <option value="header">Custom header</option>
-            <option value="basic">Basic token</option>
-          </select>
-          <input name="authHeader" placeholder="Custom header name" />
-          <input name="authPrefix" placeholder="Custom auth prefix" />
-          <textarea name="headers" placeholder='Headers JSON, e.g. {"X-Client":"subpolar"}' />
-          <input name="credentialSecret" type="password" placeholder="Secret (stored encrypted)" />
-          <Button className="md:col-span-2">Save provider</Button>
-        </form>
       )}
       <div className="grid gap-5 lg:grid-cols-[19rem_1fr]">
         <aside className="space-y-2">
@@ -183,7 +360,7 @@ export function ToolsPage({ request }: { request: Request }) {
             <button
               key={provider.id}
               onClick={() => void select(provider)}
-              className={`w-full rounded-lg border p-4 text-left ${selected?.id === provider.id ? "border-cyan-500 bg-cyan-500/10" : "bg-slate-900/60 hover:bg-slate-900"}`}
+              className={`w-full rounded-lg border p-4 text-left ${selected?.id === provider.id ? "border-blue-500 bg-blue-500/10" : "bg-slate-950/70 hover:bg-slate-950"}`}
             >
               <div className="flex items-center justify-between">
                 <span className="font-medium">{provider.name}</span>
@@ -201,13 +378,13 @@ export function ToolsPage({ request }: { request: Request }) {
             </button>
           ))}
         </aside>
-        <section className="min-w-0 rounded-xl border bg-slate-900/60 p-5">
+        <section className="min-w-0 rounded-xl border bg-slate-950/70 p-5">
           {selected ? (
             <>
               <div className="flex flex-wrap justify-between gap-3">
                 <div>
                   <h2 className="flex items-center gap-2 text-lg font-semibold">
-                    <Cable size={18} className="text-cyan-400" />
+                    <Cable size={18} className="text-blue-400" />
                     {selected.name}
                   </h2>
                   <p className="mt-1 break-all text-sm text-slate-400">{selected.endpoint}</p>
@@ -254,7 +431,7 @@ export function ToolsPage({ request }: { request: Request }) {
                         key={operation.operationId || operation.name}
                         className="rounded border bg-slate-950/60 p-3 text-sm"
                       >
-                        <p className="font-medium text-cyan-300">{operation.operationId || operation.name}</p>
+                        <p className="font-medium text-blue-300">{operation.operationId || operation.name}</p>
                         <p className="mt-1 text-xs text-slate-500">
                           {operation.method || "MCP"} {operation.path || operation.description || ""}
                         </p>
