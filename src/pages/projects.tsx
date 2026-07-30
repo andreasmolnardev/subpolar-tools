@@ -41,6 +41,13 @@ export function ProjectsPage({ request }: { request: Request }) {
         gitProvider: form.get("gitProvider"),
         defaultBranch: form.get("defaultBranch"),
         createDefaultDeveloperRole: true,
+        sandboxDefaults: {
+          image: form.get("image"),
+          cpu: form.get("cpu"),
+          memory: form.get("memory"),
+          timeout: Number(form.get("timeout")),
+          network: form.get("network") === "on",
+        },
       }),
     });
     setShowProject(false);
@@ -60,7 +67,13 @@ export function ProjectsPage({ request }: { request: Request }) {
           .split(",")
           .map((item) => item.trim())
           .filter(Boolean),
-        sandboxPolicy: {},
+        sandboxPolicy: {
+          image: form.get("image"),
+          cpu: form.get("cpu"),
+          memory: form.get("memory"),
+          timeout: Number(form.get("timeout")),
+          network: form.get("network") === "on",
+        },
       }),
     });
     setShowRole(false);
@@ -133,6 +146,14 @@ export function ProjectsPage({ request }: { request: Request }) {
           </select>
           <input name="repository" placeholder="Repository URL" />
           <input name="defaultBranch" defaultValue="main" />
+          <input name="image" defaultValue="alpine:3.21" placeholder="Sandbox image" />
+          <input name="cpu" defaultValue="1" placeholder="CPU limit" />
+          <input name="memory" defaultValue="1g" placeholder="Memory limit" />
+          <input name="timeout" type="number" defaultValue="600" placeholder="Command timeout seconds" />
+          <label className="flex items-center gap-2 text-sm">
+            <input name="network" type="checkbox" className="h-4 w-4" />
+            Allow sandbox network access
+          </label>
           <p className="text-sm text-slate-400">
             A default Developer role is created with safe Git and workspace capabilities.
           </p>
@@ -196,6 +217,14 @@ export function ProjectsPage({ request }: { request: Request }) {
                     name="capabilities"
                     defaultValue="filesystem.read, filesystem.write, filesystem.search, shell.execute, git.status, git.diff, git.log"
                   />
+                  <input name="image" defaultValue="alpine:3.21" placeholder="Sandbox image" />
+                  <input name="cpu" defaultValue="1" placeholder="CPU limit" />
+                  <input name="memory" defaultValue="1g" placeholder="Memory limit" />
+                  <input name="timeout" type="number" defaultValue="600" placeholder="Command timeout seconds" />
+                  <label className="flex items-center gap-2 text-sm md:col-span-3">
+                    <input name="network" type="checkbox" className="h-4 w-4" />
+                    Allow network access for this role
+                  </label>
                   <Button className="md:col-span-3">Save role</Button>
                 </form>
               )}
