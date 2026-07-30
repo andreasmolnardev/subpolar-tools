@@ -703,6 +703,16 @@ app.post("/api/agents", async (c) => {
   await audit(user.id, "create_agent", agent.id);
   return c.json(json(agent), 201);
 });
+app.patch("/api/agents/:id", async (c) => {
+  const user = await requireUser(c, true);
+  if (!user) return c.json({ error: "Forbidden" }, 403);
+  const input = z
+    .object({ name: z.string().min(1).optional(), description: z.string().optional(), enabled: z.boolean().optional() })
+    .parse(await c.req.json());
+  const agent = await pb.collection("agents").update(c.req.param("id"), input);
+  await audit(user.id, "update_agent", agent.id, input);
+  return c.json(json(agent));
+});
 app.get("/api/agents/:id/tools", async (c) => {
   if (!(await requireUser(c))) return c.json({ error: "Unauthorized" }, 401);
   return c.json(await list("agent_tools", `agentId="${c.req.param("id")}"`));
@@ -724,6 +734,34 @@ app.post("/api/agents/:id/tools", async (c) => {
     .parse(await c.req.json());
   const tool = await pb.collection("agent_tools").create({ ...input, agentId: c.req.param("id") });
   return c.json(json(tool), 201);
+});
+app.delete("/api/agents/:id/tools/:toolId", async (c) => {
+  const user = await requireUser(c, true);
+  if (!user) return c.json({ error: "Forbidden" }, 403);
+  const tool = await one("agent_tools", c.req.param("toolId"));
+  if (tool.agentId !== c.req.param("id")) return c.json({ error: "Tool does not belong to this agent" }, 404);
+  await pb.collection("agent_tools").delete(tool.id);
+  await audit(user.id, "delete_agent_tool", tool.id);
+  return c.body(null, 204);
+});
+app.post("/api/agents/:id/tools/:toolId/test", async (c) => {
+  if (!(await requireUser(c, true))) return c.json({ error: "Forbidden" }, 403);
+  const tool = await one("agent_tools", c.req.param("toolId"));
+  if (tool.agentId !== c.req.param("id")) return c.json({ error: "Tool does not belong to this agent" }, 404);
+  try {
+    const input = await c.req.json();
+    validateAdapter(input, tool.inputSchema as Record<string, any>);
+    const mapped: Record<string, unknown> = { ...(tool.fixedArgs as object) };
+    for (const [from, to] of Object.entries(tool.inputMap as Record<string, string>)) mapped[to] = input[from];
+    const output = await invokeProvider(
+      await one("providers", String(tool.providerId)),
+      String(tool.operation),
+      mapped,
+    );
+    return c.json({ output: mappedOutput(output, tool.outputMap as Record<string, string>) });
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Tool test failed" }, 422);
+  }
 });
 app.get("/api/agents/:id/contract", async (c) => {
   if (!(await requireUser(c))) return c.json({ error: "Unauthorized" }, 401);

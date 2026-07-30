@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Bot, KeyRound, Plus, Wrench } from "lucide-react";
+import { Bot, KeyRound, Play, Plus, Power, Trash2, Wrench } from "lucide-react";
 import { Button } from "../components/ui/button";
 
 type RecordItem = Record<string, any>;
@@ -14,6 +14,7 @@ export function AgentsPage({ request }: { request: Request }) {
   const [secret, setSecret] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [showTool, setShowTool] = useState(false);
+  const [testOutput, setTestOutput] = useState("");
 
   const load = async () => {
     const [nextAgents, nextProviders] = await Promise.all([request("/api/agents"), request("/api/providers")]);
@@ -72,6 +73,27 @@ export function AgentsPage({ request }: { request: Request }) {
       body: JSON.stringify({ name: "Admin console" }),
     });
     setSecret(result.secret);
+  };
+  const toggle = async () => {
+    if (!selected) return;
+    const updated = await request(`/api/agents/${selected.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: !selected.enabled }),
+    });
+    await load();
+    setSelected(updated);
+  };
+  const removeTool = async (tool: RecordItem) => {
+    if (!selected || !confirm(`Remove ${tool.exposedName}?`)) return;
+    await request(`/api/agents/${selected.id}/tools/${tool.id}`, { method: "DELETE" });
+    await select(selected);
+  };
+  const testTool = async (tool: RecordItem) => {
+    if (!selected) return;
+    const raw = prompt(`JSON input for ${tool.exposedName}`, "{}");
+    if (raw === null) return;
+    const result = await request(`/api/agents/${selected.id}/tools/${tool.id}/test`, { method: "POST", body: raw });
+    setTestOutput(JSON.stringify(result, null, 2));
   };
 
   return (
@@ -135,6 +157,10 @@ export function AgentsPage({ request }: { request: Request }) {
                   <p className="mt-1 text-sm text-slate-400">{selected.description || "No description"}</p>
                 </div>
                 <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => void toggle()}>
+                    <Power size={14} className="mr-2" />
+                    {selected.enabled ? "Disable" : "Enable"}
+                  </Button>
                   <Button variant="outline" size="sm" onClick={() => setShowTool(!showTool)}>
                     <Wrench size={14} className="mr-2" />
                     Expose tool
@@ -174,7 +200,17 @@ export function AgentsPage({ request }: { request: Request }) {
                     <div className="space-y-2">
                       {tools.map((tool) => (
                         <div key={tool.id} className="rounded-lg border bg-slate-950/60 p-3">
-                          <p className="font-medium text-cyan-300">{tool.exposedName}</p>
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="font-medium text-cyan-300">{tool.exposedName}</p>
+                            <div className="flex gap-1">
+                              <Button variant="ghost" size="sm" onClick={() => void testTool(tool)}>
+                                <Play size={13} />
+                              </Button>
+                              <Button variant="ghost" size="sm" onClick={() => void removeTool(tool)}>
+                                <Trash2 size={13} />
+                              </Button>
+                            </div>
+                          </div>
                           <p className="mt-1 text-xs text-slate-500">
                             {tool.operation} · {tool.description || "No description"}
                           </p>
@@ -191,6 +227,11 @@ export function AgentsPage({ request }: { request: Request }) {
                     {JSON.stringify(contract, null, 2)}
                   </pre>
                 </div>
+                {testOutput && (
+                  <pre className="max-h-40 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-300">
+                    {testOutput}
+                  </pre>
+                )}
               </div>
             </>
           ) : (
