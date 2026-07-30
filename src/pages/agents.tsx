@@ -10,6 +10,7 @@ export function AgentsPage({ request }: { request: Request }) {
   const [providers, setProviders] = useState<RecordItem[]>([]);
   const [selected, setSelected] = useState<RecordItem | null>(null);
   const [tools, setTools] = useState<RecordItem[]>([]);
+  const [credentials, setCredentials] = useState<RecordItem[]>([]);
   const [contract, setContract] = useState<RecordItem | null>(null);
   const [secret, setSecret] = useState("");
   const [showCreate, setShowCreate] = useState(false);
@@ -23,12 +24,14 @@ export function AgentsPage({ request }: { request: Request }) {
   };
   const select = async (agent: RecordItem) => {
     setSelected(agent);
-    const [nextTools, nextContract] = await Promise.all([
+    const [nextTools, nextContract, nextCredentials] = await Promise.all([
       request(`/api/agents/${agent.id}/tools`),
       request(`/api/agents/${agent.id}/contract`),
+      request(`/api/agents/${agent.id}/credentials`),
     ]);
     setTools(nextTools);
     setContract(nextContract);
+    setCredentials(nextCredentials);
   };
   useEffect(() => {
     void load();
@@ -73,6 +76,16 @@ export function AgentsPage({ request }: { request: Request }) {
       body: JSON.stringify({ name: "Admin console" }),
     });
     setSecret(result.secret);
+    await select(selected);
+  };
+  const revokeCredential = async (credential: RecordItem) => {
+    if (
+      !selected ||
+      !confirm(`Revoke ${credential.name}? Existing MCP and OpenAPI clients using this token will lose access.`)
+    )
+      return;
+    await request(`/api/agent-credentials/${credential.id}/revoke`, { method: "POST" });
+    await select(selected);
   };
   const toggle = async () => {
     if (!selected) return;
@@ -232,6 +245,36 @@ export function AgentsPage({ request }: { request: Request }) {
                     {testOutput}
                   </pre>
                 )}
+              </div>
+              <div className="mt-6 border-t pt-5">
+                <h3 className="text-sm font-medium text-slate-300">MCP and OpenAPI access tokens</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  Each token authorizes this profile through the MCP endpoint and its generated OpenAPI contract.
+                </p>
+                <div className="mt-3 space-y-2">
+                  {credentials.map((credential) => (
+                    <div
+                      key={credential.id}
+                      className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-slate-950/60 p-3"
+                    >
+                      <div>
+                        <p className="font-medium">{credential.name}</p>
+                        <p className="text-xs text-slate-500">
+                          Created {credential.created} · last used {credential.lastUsed || "Never"}
+                        </p>
+                      </div>
+                      <Button
+                        variant={credential.revoked ? "outline" : "destructive"}
+                        size="sm"
+                        disabled={credential.revoked}
+                        onClick={() => void revokeCredential(credential)}
+                      >
+                        {credential.revoked ? "Revoked" : "Revoke"}
+                      </Button>
+                    </div>
+                  ))}
+                  {!credentials.length && <p className="text-sm text-slate-500">No API tokens have been generated.</p>}
+                </div>
               </div>
             </>
           ) : (
