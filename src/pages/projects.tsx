@@ -15,6 +15,7 @@ export function ProjectsPage({ request }: { request: Request }) {
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [showGit, setShowGit] = useState(false);
   const [inspection, setInspection] = useState<RecordItem | null>(null);
+  const [workspaceSecret, setWorkspaceSecret] = useState("");
   const [error, setError] = useState("");
   const load = () => request("/api/projects").then(setProjects);
   const select = async (project: RecordItem) => {
@@ -118,6 +119,13 @@ export function ProjectsPage({ request }: { request: Request }) {
     await request(`/api/workspaces/${workspace.id}`, { method: "DELETE" });
     await select(selected);
     await load();
+  };
+  const createWorkspaceCredential = async (role: RecordItem) => {
+    const result = await request(`/api/roles/${role.id}/credentials`, {
+      method: "POST",
+      body: JSON.stringify({ name: `${role.name} workspace access` }),
+    });
+    setWorkspaceSecret(result.secret);
   };
   return (
     <div>
@@ -244,14 +252,30 @@ export function ProjectsPage({ request }: { request: Request }) {
                   <Button className="md:col-span-3">Provision worktree and sandbox</Button>
                 </form>
               )}
+              {workspaceSecret && (
+                <div className="mt-5 rounded-lg border border-cyan-700 bg-slate-950 p-4">
+                  <p className="text-sm font-medium">
+                    Store this workspace credential now. It will not be shown again.
+                  </p>
+                  <code className="mt-2 block overflow-auto text-sm text-cyan-300">{workspaceSecret}</code>
+                  <Button className="mt-3" variant="outline" size="sm" onClick={() => setWorkspaceSecret("")}>
+                    I stored it
+                  </Button>
+                </div>
+              )}
               <div className="mt-6 grid gap-5 xl:grid-cols-2">
                 <div>
                   <h3 className="mb-3 text-sm font-medium">Roles</h3>
                   {roles.map((role) => (
                     <div key={role.id} className="mb-2 rounded-lg border bg-slate-950/60 p-3">
-                      <div className="flex justify-between">
+                      <div className="flex items-center justify-between gap-2">
                         <span className="font-medium">{role.name}</span>
-                        <span className="text-xs text-slate-400">max {role.maxWorkspaces}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-slate-400">max {role.maxWorkspaces}</span>
+                          <Button variant="outline" size="sm" onClick={() => void createWorkspaceCredential(role)}>
+                            Credential
+                          </Button>
+                        </div>
                       </div>
                       <p className="mt-1 truncate text-xs text-slate-500">{(role.capabilities || []).join(", ")}</p>
                     </div>
