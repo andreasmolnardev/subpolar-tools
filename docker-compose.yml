@@ -1,0 +1,18 @@
+services:
+  subpolar:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      SUBPOLAR_ADMIN_EMAIL: ${SUBPOLAR_ADMIN_EMAIL:?set in .env}
+      SUBPOLAR_ADMIN_PASSWORD: ${SUBPOLAR_ADMIN_PASSWORD:?set in .env}
+      SUBPOLAR_SECRET_KEY: ${SUBPOLAR_SECRET_KEY:?set in .env}
+      SUBPOLAR_ORIGIN: ${SUBPOLAR_ORIGIN:-http://localhost:3000}
+    volumes:
+      - subpolar-data:/app/pb_data
+      # Required only by the internal sandbox manager, never exposed to callers.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - subpolar-workspaces:/var/lib/subpolar/workspaces
+volumes:
+  subpolar-data:
+  subpolar-workspaces:

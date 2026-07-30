@@ -8,16 +8,16 @@ Build **Subpolar Tools** as a model-agnostic and harness-agnostic tool-calling a
 
 It should provide:
 
-* centralized MCP and OpenAPI integrations;
-* stateless agent authorization profiles;
-* project-specific roles;
-* isolated Git worktrees and workspace sandboxes;
-* built-in filesystem, shell, and Git capabilities;
-* an administrative web interface for configuring the platform.
+- centralized MCP and OpenAPI integrations;
+- stateless agent authorization profiles;
+- project-specific roles;
+- isolated Git worktrees and workspace sandboxes;
+- built-in filesystem, shell, and Git capabilities;
+- an administrative web interface for configuring the platform.
 
 Subpolar should provide the infrastructure behind a computer-like agent experience without initially owning the model loop, conversations, or agent runtime.
 
-The architecture follows the original concept of aggregating tool providers, exposing selected tools through agent-specific profiles, and supporting parallel coding work through project worktrees. 
+The architecture follows the original concept of aggregating tool providers, exposing selected tools through agent-specific profiles, and supporting parallel coding work through project worktrees.
 
 ---
 
@@ -29,8 +29,8 @@ This is the harness-facing layer.
 
 It exposes tools through:
 
-* MCP;
-* OpenAPI.
+- MCP;
+- OpenAPI.
 
 It contains the stateless resolver that:
 
@@ -50,14 +50,14 @@ It must not depend on the web interface.
 
 This owns:
 
-* projects;
-* Git repositories;
-* worktrees;
-* workspace handles;
-* sandbox containers;
-* filesystem access;
-* shell execution;
-* Git operations.
+- projects;
+- Git repositories;
+- worktrees;
+- workspace handles;
+- sandbox containers;
+- filesystem access;
+- shell execution;
+- Git operations.
 
 ## Administrative web interface
 
@@ -94,14 +94,14 @@ The Tools section manages all centrally configured tool providers.
 
 Show:
 
-* configured MCP providers;
-* configured OpenAPI providers;
-* provider availability;
-* tool count;
-* schema status;
-* last successful connection;
-* affected agents and project roles;
-* warning state when a provider changed or became unavailable.
+- configured MCP providers;
+- configured OpenAPI providers;
+- provider availability;
+- tool count;
+- schema status;
+- last successful connection;
+- affected agents and project roles;
+- warning state when a provider changed or became unavailable.
 
 Useful filters:
 
@@ -122,13 +122,13 @@ Administrators should be able to add:
 
 Configure:
 
-* display name;
-* transport;
-* server URL or command;
-* authentication;
-* environment variables where applicable;
-* startup behavior;
-* connection timeout.
+- display name;
+- transport;
+- server URL or command;
+- authentication;
+- environment variables where applicable;
+- startup behavior;
+- connection timeout.
 
 After saving, Subpolar discovers the tools and schemas exposed by the MCP server.
 
@@ -136,12 +136,12 @@ After saving, Subpolar discovers the tools and schemas exposed by the MCP server
 
 Configure:
 
-* display name;
-* base URL;
-* OpenAPI schema;
-* authentication;
-* headers;
-* timeout.
+- display name;
+- base URL;
+- OpenAPI schema;
+- authentication;
+- headers;
+- timeout.
 
 OpenAPI schemas are treated as explicitly configured and stable.
 
@@ -149,17 +149,17 @@ OpenAPI schemas are treated as explicitly configured and stable.
 
 Show:
 
-* connection configuration;
-* credentials reference;
-* provider status;
-* discovered operations or MCP tools;
-* current schema;
-* previous MCP schema snapshot;
-* schema changes;
-* profiles using each tool;
-* test connection action;
-* refresh or rediscover action;
-* disable provider action.
+- connection configuration;
+- credentials reference;
+- provider status;
+- discovered operations or MCP tools;
+- current schema;
+- previous MCP schema snapshot;
+- schema changes;
+- profiles using each tool;
+- test connection action;
+- refresh or rediscover action;
+- disable provider action.
 
 Credentials should be masked and stored centrally in Subpolar.
 
@@ -175,29 +175,29 @@ An agent profile is a stateless authorization and tool-presentation profile. It 
 
 Show:
 
-* profile name;
-* description;
-* enabled status;
-* exposed tool count;
-* provider health warnings;
-* creation and modification timestamps.
+- profile name;
+- description;
+- enabled status;
+- exposed tool count;
+- provider health warnings;
+- creation and modification timestamps.
 
 ### Agent editor
 
 Administrators should be able to:
 
-* create and delete profiles;
-* enable or disable profiles;
-* add provider-backed tools;
-* rename tools;
-* define the model-visible description;
-* define the exposed input schema;
-* map exposed input fields to provider fields;
-* define fixed or hidden arguments;
-* map provider output into the exposed output;
-* preview the final MCP/OpenAPI tool contract;
-* test the adapted tool;
-* validate mappings against the current provider schema.
+- create and delete profiles;
+- enable or disable profiles;
+- add provider-backed tools;
+- rename tools;
+- define the model-visible description;
+- define the exposed input schema;
+- map exposed input fields to provider fields;
+- define fixed or hidden arguments;
+- map provider output into the exposed output;
+- preview the final MCP/OpenAPI tool contract;
+- test the adapted tool;
+- validate mappings against the current provider schema.
 
 Example:
 
@@ -217,11 +217,11 @@ The UI should support generating and revoking credentials for using an agent pro
 
 Show:
 
-* credential name;
-* creation date;
-* last used;
-* status;
-* revoke action.
+- credential name;
+- creation date;
+- last used;
+- status;
+- revoke action.
 
 The full secret should only be shown when created.
 
@@ -237,13 +237,13 @@ Projects own repositories, roles, workspaces, worktrees, and sandbox configurati
 
 Show:
 
-* project name;
-* Git provider;
-* repository;
-* default branch;
-* role count;
-* active workspace count;
-* project health.
+- project name;
+- Git provider;
+- repository;
+- default branch;
+- role count;
+- active workspace count;
+- project health.
 
 ### Create project
 
@@ -251,20 +251,20 @@ The project creation flow should include:
 
 #### General
 
-* project name;
-* description;
-* repository URL or repository selection;
-* default branch.
+- project name;
+- description;
+- repository URL or repository selection;
+- default branch.
 
 #### Git provider
 
 Choose:
 
-* Gitea;
-* GitHub;
-* GitLab;
-* generic Git remote;
-* local-only repository.
+- Gitea;
+- GitHub;
+- GitLab;
+- generic Git remote;
+- local-only repository.
 
 Configure or select the corresponding Git provider credentials.
 
@@ -278,39 +278,39 @@ Include:
 
 When selected, Subpolar creates a practical role containing:
 
-* filesystem read;
-* filesystem write;
-* filesystem search;
-* shell execution;
-* Git status;
-* Git diff;
-* Git log;
-* Git branch;
-* Git commit;
-* Git fetch;
-* Git pull;
-* Git push;
-* pull-request creation where supported.
+- filesystem read;
+- filesystem write;
+- filesystem search;
+- shell execution;
+- Git status;
+- Git diff;
+- Git log;
+- Git branch;
+- Git commit;
+- Git fetch;
+- Git pull;
+- Git push;
+- pull-request creation where supported.
 
 Dangerous capabilities should remain disabled by default, including:
 
-* force push;
-* changing remotes;
-* deleting remote branches;
-* directly merging into the default branch.
+- force push;
+- changing remotes;
+- deleting remote branches;
+- directly merging into the default branch.
 
 #### Sandbox defaults
 
 Configure:
 
-* container image;
-* CPU limit;
-* memory limit;
-* command timeout;
-* network access;
-* environment variables;
-* secrets;
-* shared package caches.
+- container image;
+- CPU limit;
+- memory limit;
+- command timeout;
+- network access;
+- environment variables;
+- secrets;
+- shared package caches.
 
 ---
 
@@ -339,13 +339,13 @@ Release
 
 Each role defines:
 
-* external integration tools;
-* per-tool adapters;
-* workspace tools;
-* Git capabilities;
-* sandbox policy;
-* workspace creation permissions;
-* maximum active workspaces.
+- external integration tools;
+- per-tool adapters;
+- workspace tools;
+- Git capabilities;
+- sandbox policy;
+- workspace creation permissions;
+- maximum active workspaces.
 
 A role may create multiple active workspaces.
 
@@ -353,27 +353,27 @@ A role may create multiple active workspaces.
 
 Show:
 
-* workspace label;
-* opaque workspace handle;
-* assigned project role;
-* branch;
-* base branch;
-* worktree state;
-* sandbox state;
-* creation time;
-* last activity;
-* Git status;
-* resource usage where available.
+- workspace label;
+- opaque workspace handle;
+- assigned project role;
+- branch;
+- base branch;
+- worktree state;
+- sandbox state;
+- creation time;
+- last activity;
+- Git status;
+- resource usage where available.
 
 Available actions may include:
 
-* create workspace;
-* stop or start sandbox;
-* inspect status;
-* view diff;
-* release workspace;
-* delete workspace;
-* copy workspace handle.
+- create workspace;
+- stop or start sandbox;
+- inspect status;
+- view diff;
+- release workspace;
+- delete workspace;
+- copy workspace handle.
 
 Ordinary tool callers should not receive a workspace-listing capability unless their project role explicitly grants it. The admin UI may list all workspaces.
 
@@ -401,15 +401,15 @@ The web interface needs normal account-management features expected from an admi
 
 Include:
 
-* sign in;
-* sign out;
-* secure session handling;
-* password hashing;
-* rate limiting;
-* CSRF protection where applicable;
-* session revocation;
-* optional persistent sign-in;
-* audit logging for security-sensitive actions.
+- sign in;
+- sign out;
+- secure session handling;
+- password hashing;
+- rate limiting;
+- CSRF protection where applicable;
+- session revocation;
+- optional persistent sign-in;
+- audit logging for security-sensitive actions.
 
 ## Password recovery
 
@@ -425,34 +425,34 @@ Forgot password
 
 Requirements:
 
-* reset tokens must be single-use;
-* tokens must expire;
-* responses should not reveal whether an email exists;
-* password reset attempts should be rate-limited;
-* old reset tokens should become invalid after a successful reset.
+- reset tokens must be single-use;
+- tokens must expire;
+- responses should not reveal whether an email exists;
+- password reset attempts should be rate-limited;
+- old reset tokens should become invalid after a successful reset.
 
 ## User profile
 
 Users should be able to:
 
-* change display name;
-* change email;
-* change password;
-* view active sessions;
-* revoke active sessions;
-* sign out from all devices.
+- change display name;
+- change email;
+- change password;
+- view active sessions;
+- revoke active sessions;
+- sign out from all devices.
 
 ## Administrative user management
 
 The **Users** sidebar section should allow administrators to:
 
-* list users;
-* create users;
-* disable or re-enable users;
-* reset a user’s access;
-* assign platform roles;
-* revoke sessions;
-* review recent security events.
+- list users;
+- create users;
+- disable or re-enable users;
+- reset a user’s access;
+- assign platform roles;
+- revoke sessions;
+- review recent security events.
 
 Initial platform roles can remain simple:
 
@@ -469,9 +469,9 @@ A normal user may be granted access to selected agent profiles or projects witho
 
 Support:
 
-* verification email after registration or email changes;
-* resend verification message;
-* expiring verification tokens.
+- verification email after registration or email changes;
+- resend verification message;
+- expiring verification tokens.
 
 Self-registration can be optional and disabled by default for self-hosted deployments.
 
@@ -500,11 +500,11 @@ Controls which stateless remote tools are exposed through a specific agent endpo
 
 Controls:
 
-* project integration tools;
-* workspace tools;
-* Git capabilities;
-* sandbox policy;
-* workspace creation and cleanup.
+- project integration tools;
+- workspace tools;
+- Git capabilities;
+- sandbox policy;
+- workspace creation and cleanup.
 
 ## Workspace handle
 
@@ -520,23 +520,23 @@ Do not put configuration logic only in the frontend.
 
 The UI should be:
 
-* responsive;
-* accessible;
-* keyboard navigable;
-* suitable for desktop administration;
-* usable without exposing secret values;
-* clear about degraded or unavailable tools;
-* explicit when an action is destructive.
+- responsive;
+- accessible;
+- keyboard navigable;
+- suitable for desktop administration;
+- usable without exposing secret values;
+- clear about degraded or unavailable tools;
+- explicit when an action is destructive.
 
 Important actions should use confirmation dialogs, especially:
 
-* deleting providers;
-* deleting agent profiles;
-* deleting projects;
-* deleting workspaces;
-* revoking credentials;
-* disabling users;
-* rotating provider credentials.
+- deleting providers;
+- deleting agent profiles;
+- deleting projects;
+- deleting workspaces;
+- revoking credentials;
+- disabling users;
+- rotating provider credentials.
 
 ---
 
@@ -548,15 +548,15 @@ Goal: establish the platform and administrative access.
 
 Deliver:
 
-* user storage;
-* sign in and sign out;
-* forgot-password flow;
-* password reset;
-* email verification;
-* session management;
-* admin and user platform roles;
-* protected backend APIs;
-* initial sidebar and application shell.
+- user storage;
+- sign in and sign out;
+- forgot-password flow;
+- password reset;
+- email verification;
+- session management;
+- admin and user platform roles;
+- protected backend APIs;
+- initial sidebar and application shell.
 
 Success condition:
 
@@ -570,16 +570,16 @@ Goal: configure all external tools from the web UI.
 
 Deliver:
 
-* Tools sidebar section;
-* All Tools page;
-* MCP provider creation;
-* OpenAPI provider creation;
-* centrally stored credentials;
-* connection testing;
-* MCP startup discovery;
-* schema snapshot comparison;
-* unavailable and changed-provider warnings;
-* provider detail pages.
+- Tools sidebar section;
+- All Tools page;
+- MCP provider creation;
+- OpenAPI provider creation;
+- centrally stored credentials;
+- connection testing;
+- MCP startup discovery;
+- schema snapshot comparison;
+- unavailable and changed-provider warnings;
+- provider detail pages.
 
 Success condition:
 
@@ -593,17 +593,17 @@ Goal: create stateless model-facing tool profiles.
 
 Deliver:
 
-* Agents sidebar section;
-* agent list;
-* agent editor;
-* per-agent tool selection;
-* tool renaming;
-* input and output adapters;
-* fixed and hidden arguments;
-* schema preview;
-* adapter validation;
-* testing;
-* agent-profile access credentials.
+- Agents sidebar section;
+- agent list;
+- agent editor;
+- per-agent tool selection;
+- tool renaming;
+- input and output adapters;
+- fixed and hidden arguments;
+- schema preview;
+- adapter validation;
+- testing;
+- agent-profile access credentials.
 
 Success condition:
 
@@ -617,16 +617,16 @@ Goal: configure repository-backed projects.
 
 Deliver:
 
-* Projects sidebar section;
-* project creation;
-* Git provider selection;
-* repository configuration;
-* project detail pages;
-* multiple project roles;
-* role-specific integration tools;
-* role-specific workspace tools;
-* sandbox policies;
-* “Create default developer role” checkbox.
+- Projects sidebar section;
+- project creation;
+- Git provider selection;
+- repository configuration;
+- project detail pages;
+- multiple project roles;
+- role-specific integration tools;
+- role-specific workspace tools;
+- sandbox policies;
+- “Create default developer role” checkbox.
 
 Success condition:
 
@@ -640,13 +640,13 @@ Goal: allow parallel isolated coding work.
 
 Deliver:
 
-* workspace creation from project roles;
-* Subpolar-owned Git worktrees;
-* high-entropy opaque workspace handles;
-* multiple workspaces per project role;
-* workspace status and lifecycle;
-* admin workspace list;
-* restrictions on workspace enumeration through agent tools.
+- workspace creation from project roles;
+- Subpolar-owned Git worktrees;
+- high-entropy opaque workspace handles;
+- multiple workspaces per project role;
+- workspace status and lifecycle;
+- admin workspace list;
+- restrictions on workspace enumeration through agent tools.
 
 Success condition:
 
@@ -660,15 +660,15 @@ Goal: safely support general shell and filesystem access.
 
 Deliver:
 
-* one sandbox per workspace;
-* exclusive worktree mounts;
-* filesystem tools;
-* shell execution;
-* resource limits;
-* network policy;
-* isolated home and temporary directories;
-* configurable shared caches;
-* workspace inspection through the admin UI.
+- one sandbox per workspace;
+- exclusive worktree mounts;
+- filesystem tools;
+- shell execution;
+- resource limits;
+- network policy;
+- isolated home and temporary directories;
+- configurable shared caches;
+- workspace inspection through the admin UI.
 
 Success condition:
 
@@ -682,12 +682,12 @@ Goal: support a complete coding workflow.
 
 Deliver:
 
-* local Git tools;
-* remote fetch, pull, and push;
-* selected Git-provider integration;
-* pull-request creation;
-* role-controlled Git capabilities;
-* project and workspace Git status in the UI.
+- local Git tools;
+- remote fetch, pull, and push;
+- selected Git-provider integration;
+- pull-request creation;
+- role-controlled Git capabilities;
+- project and workspace Git status in the UI.
 
 Success condition:
 
@@ -721,16 +721,16 @@ The first end-to-end release should allow an administrator to:
 
 Do not include yet:
 
-* an embedded model runtime;
-* agent conversations;
-* model selection;
-* prompt assembly;
-* an agent-session launcher;
-* autonomous orchestration;
-* multi-agent scheduling;
-* a chat interface resembling Perplexity Computer;
-* arbitrary executable plugins;
-* automatic merging or deployment.
+- an embedded model runtime;
+- agent conversations;
+- model selection;
+- prompt assembly;
+- an agent-session launcher;
+- autonomous orchestration;
+- multi-agent scheduling;
+- a chat interface resembling Perplexity Computer;
+- arbitrary executable plugins;
+- automatic merging or deployment.
 
 The web interface is for **configuration, administration, status, and workspace management**, not for running the reasoning loop.
 
