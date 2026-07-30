@@ -10,6 +10,15 @@ const app = new Hono();
 const adminEmail = process.env.SUBPOLAR_ADMIN_EMAIL ?? "admin@example.com";
 const adminPassword = process.env.SUBPOLAR_ADMIN_PASSWORD ?? "development-only-password";
 const rateWindows = new Map<string, { started: number; count: number }>();
+type McpSession = {
+  process: ReturnType<typeof Bun.spawn>;
+  pending: Map<number, { resolve: (value: any) => void; reject: (reason: Error) => void; timeout: Timer }>;
+  nextId: number;
+  buffer: string;
+  stderr: string;
+  initialized?: any;
+};
+const mcpSessions = new Map<string, McpSession>();
 
 type RecordData = Record<string, unknown> & { id: string; created: string; updated: string };
 const json = <T>(value: T) => JSON.parse(JSON.stringify(value)) as T;
@@ -231,6 +240,46 @@ function rateLimited(c: Context, bucket: string, limit = 5, windowMs = 60_000) {
 }
 const configOf = (record: RecordData) => (record.configuration ?? {}) as Record<string, unknown>;
 
+function validateProviderConfiguration(configuration: Record<string, unknown>) {
+  const strings = (value: unknown, field: string) => {
+    if (value === undefined) return;
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+      throw new Error(`${field} must be an object`);
+    for (const [key, item] of Object.entries(value)) {
+      if (!key || /[\r\n]/.test(key) || typeof item !== "string" || /[\r\n]/.test(item))
+        throw new Error(`${field} must contain string values without line breaks`);
+    }
+  };
+  strings(configuration.headers, "Provider headers");
+  strings(configuration.environment, "MCP command environment");
+  if (
+    configuration.command !== undefined &&
+    (!Array.isArray(configuration.command) ||
+      !configuration.command.length ||
+      !configuration.command.every((part) => typeof part === "string" && part.length))
+  )
+    throw new Error("MCP command transport requires configuration.command as a non-empty command array");
+  if (configuration.startup !== undefined && !["on-demand", "eager"].includes(String(configuration.startup)))
+    throw new Error("MCP startup must be on-demand or eager");
+  const auth = configuration.auth as Record<string, unknown> | undefined;
+  if (auth && !["bearer", "header", "basic"].includes(String(auth.type ?? "bearer")))
+    throw new Error("Provider authentication type is invalid");
+  return configuration;
+}
+
+async function providerView(provider: RecordData) {
+  const configuration = configOf(provider);
+  const { credentialId, ...view } = provider;
+  const headers = Object.keys((configuration.headers ?? {}) as Record<string, string>);
+  const environment = Object.keys((configuration.environment ?? {}) as Record<string, string>);
+  const credential = credentialId ? await one("credentials", String(credentialId)) : null;
+  return {
+    ...view,
+    configuration: { ...configuration, headers, environment },
+    credential: credential ? { name: credential.name, masked: "Configured" } : null,
+  };
+}
+
 async function providerHeaders(provider: RecordData) {
   const configuration = configOf(provider);
   const headers = new Headers((configuration.headers ?? {}) as Record<string, string>);
@@ -243,7 +292,20 @@ async function providerHeaders(provider: RecordData) {
   else headers.set("Authorization", `Bearer ${secret}`);
   return headers;
 }
-async function mcpStdio(provider: RecordData, requests: Array<{ method: string; params: object }>) {
+function stopMcpSession(providerId: string) {
+  const session = mcpSessions.get(providerId);
+  if (!session) return;
+  mcpSessions.delete(providerId);
+  session.process.kill();
+  for (const pending of session.pending.values()) {
+    clearTimeout(pending.timeout);
+    pending.reject(new Error("MCP command restarted"));
+  }
+}
+async function mcpSession(provider: RecordData) {
+  const existing = mcpSessions.get(provider.id);
+  if (existing && existing.process.exitCode === null) return existing;
+  if (existing) mcpSessions.delete(provider.id);
   const configuration = configOf(provider);
   const command = configuration.command;
   if (!Array.isArray(command) || !command.length || !command.every((part) => typeof part === "string"))
@@ -258,31 +320,83 @@ async function mcpStdio(provider: RecordData, requests: Array<{ method: string; 
     stderr: "pipe",
     env: { ...Bun.env, ...((environment ?? {}) as Record<string, string>) },
   });
-  for (const [index, request] of requests.entries())
-    process.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: index + 1, ...request })}\n`);
-  process.stdin.end();
-  const timeout = Number(configuration.timeout ?? 10000);
-  const completed = await Promise.race([
-    Promise.all([new Response(process.stdout).text(), new Response(process.stderr).text(), process.exited]),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => {
-        process.kill();
+  const session: McpSession = { process, pending: new Map(), nextId: 1, buffer: "", stderr: "" };
+  mcpSessions.set(provider.id, session);
+  void (async () => {
+    const reader = process.stdout.getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        session.buffer += decoder.decode(value, { stream: true });
+        let newline = session.buffer.indexOf("\n");
+        while (newline >= 0) {
+          const line = session.buffer.slice(0, newline).trim();
+          session.buffer = session.buffer.slice(newline + 1);
+          if (line) {
+            try {
+              const response = JSON.parse(line) as { id?: number };
+              if (typeof response.id === "number") {
+                const pending = session.pending.get(response.id);
+                if (pending) {
+                  clearTimeout(pending.timeout);
+                  session.pending.delete(response.id);
+                  pending.resolve(response);
+                }
+              }
+            } catch {
+              // MCP servers may emit diagnostics; only JSON-RPC responses are actionable.
+            }
+          }
+          newline = session.buffer.indexOf("\n");
+        }
+      }
+    } finally {
+      if (mcpSessions.get(provider.id) === session) mcpSessions.delete(provider.id);
+    }
+  })();
+  void new Response(process.stderr).text().then((value) => (session.stderr = value));
+  void process.exited.then((exitCode) => {
+    if (mcpSessions.get(provider.id) === session) mcpSessions.delete(provider.id);
+    for (const pending of session.pending.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error(session.stderr || `MCP command exited with ${exitCode}`));
+    }
+    session.pending.clear();
+  });
+  return session;
+}
+async function mcpStdio(provider: RecordData, requests: Array<{ method: string; params: object }>) {
+  const session = await mcpSession(provider);
+  const timeout = Number(configOf(provider).timeout ?? 10000);
+  const request = (method: string, params: object) =>
+    new Promise<any>((resolve, reject) => {
+      const id = session.nextId++;
+      const timer = setTimeout(() => {
+        session.pending.delete(id);
         reject(new Error("MCP command timed out"));
-      }, timeout),
-    ),
-  ]);
-  const [stdout, stderr, exitCode] = completed;
-  if (exitCode !== 0) throw new Error(stderr || `MCP command exited with ${exitCode}`);
-  const responses = stdout
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as { id?: number; result?: any; error?: { message: string } });
-  return requests.map(
-    (_, index) =>
-      responses.find((response) => response.id === index + 1) ?? {
-        error: { message: "MCP command returned no response" },
-      },
-  );
+      }, timeout);
+      session.pending.set(id, { resolve, reject, timeout: timer });
+      const stdin = session.process.stdin;
+      if (!stdin || typeof stdin === "number") {
+        clearTimeout(timer);
+        session.pending.delete(id);
+        reject(new Error("MCP command stdin is unavailable"));
+        return;
+      }
+      stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+    });
+  const responses: any[] = [];
+  for (const item of requests) {
+    if (item.method === "initialize" && session.initialized) responses.push(session.initialized);
+    else {
+      const response = await request(item.method, item.params);
+      if (item.method === "initialize" && !response.error) session.initialized = response;
+      responses.push(response);
+    }
+  }
+  return responses;
 }
 function openApiOperations(document: Record<string, any>) {
   const operations: Record<string, unknown>[] = [];
@@ -731,7 +845,7 @@ app.get("/api/audit-events", async (c) => {
 
 app.get("/api/providers", async (c) => {
   if (!(await requireUser(c))) return c.json({ error: "Unauthorized" }, 401);
-  return c.json(await list("providers"));
+  return c.json(await Promise.all((await list("providers")).map(providerView)));
 });
 app.post("/api/providers", async (c) => {
   const user = await requireUser(c, true);
@@ -740,13 +854,16 @@ app.post("/api/providers", async (c) => {
     .object({
       name: z.string().min(1),
       kind: z.enum(["MCP", "OpenAPI"]),
-      endpoint: z.string().min(1),
+      endpoint: z.string().default(""),
       configuration: z.record(z.unknown()).default({}),
       schema: z.record(z.unknown()).default({}),
       credentialName: z.string().optional(),
       credentialSecret: z.string().optional(),
     })
     .parse(await c.req.json());
+  validateProviderConfiguration(input.configuration);
+  if ((!input.endpoint && input.kind === "OpenAPI") || (!input.endpoint && input.configuration.transport !== "command"))
+    return c.json({ error: "A provider endpoint is required unless MCP command transport is selected" }, 422);
   let credentialId = "";
   if (input.credentialSecret) {
     const credential = await pb.collection("credentials").create({
@@ -769,7 +886,7 @@ app.post("/api/providers", async (c) => {
     }
   }
   await audit(user.id, "create_provider", provider.id);
-  return c.json(json(provider), 201);
+  return c.json(await providerView(json(provider) as unknown as RecordData), 201);
 });
 app.post("/api/providers/:id/test", async (c) => {
   const user = await requireUser(c, true);
@@ -778,12 +895,15 @@ app.post("/api/providers/:id/test", async (c) => {
   try {
     const updated = await discover(provider);
     await audit(user.id, "test_provider", provider.id, { status: "Available" });
-    return c.json(json(updated));
+    return c.json(await providerView(json(updated) as unknown as RecordData));
   } catch (error) {
     const updated = await pb.collection("providers").update(provider.id, { status: "Unavailable" });
     await audit(user.id, "test_provider", provider.id, { status: "Unavailable" });
     return c.json(
-      { provider: json(updated), error: error instanceof Error ? error.message : "Provider test failed" },
+      {
+        provider: await providerView(json(updated) as unknown as RecordData),
+        error: error instanceof Error ? error.message : "Provider test failed",
+      },
       422,
     );
   }
@@ -793,7 +913,7 @@ app.post("/api/providers/:id/refresh", async (c) => {
   if (!user) return c.json({ error: "Forbidden" }, 403);
   const updated = await discover(await one("providers", c.req.param("id")));
   await audit(user.id, "refresh_provider", updated.id);
-  return c.json(json(updated));
+  return c.json(await providerView(json(updated) as unknown as RecordData));
 });
 app.patch("/api/providers/:id", async (c) => {
   const user = await requireUser(c, true);
@@ -810,6 +930,7 @@ app.patch("/api/providers/:id", async (c) => {
     })
     .parse(await c.req.json());
   const provider = await one("providers", c.req.param("id"));
+  if (input.configuration) validateProviderConfiguration(input.configuration);
   let credentialId = String(provider.credentialId || "");
   if (input.credentialSecret) {
     const credential = await pb.collection("credentials").create({
@@ -819,13 +940,23 @@ app.patch("/api/providers/:id", async (c) => {
       ownerType: "provider",
       ownerId: provider.id,
     });
-    if (credentialId) await pb.collection("credentials").delete(credentialId);
     credentialId = credential.id;
   }
   const { credentialName, credentialSecret, ...changes } = input;
   const updated = await pb.collection("providers").update(c.req.param("id"), { ...changes, credentialId });
+  if (input.configuration && provider.configuration && configOf(provider).transport === "command")
+    stopMcpSession(provider.id);
+  if (credentialSecret && provider.credentialId)
+    await pb.collection("credentials").delete(String(provider.credentialId));
+  if (input.configuration?.transport === "command" && input.configuration.startup === "eager") {
+    try {
+      await discover(json(updated) as unknown as RecordData);
+    } catch {
+      await pb.collection("providers").update(updated.id, { status: "Unavailable" });
+    }
+  }
   await audit(user.id, "update_provider", updated.id, { ...changes, credentialRotated: Boolean(credentialSecret) });
-  return c.json(json(updated));
+  return c.json(await providerView((await one("providers", updated.id)) as RecordData));
 });
 app.get("/api/providers/:id/usage", async (c) => {
   if (!(await requireUser(c))) return c.json({ error: "Unauthorized" }, 401);
@@ -852,6 +983,7 @@ app.delete("/api/providers/:id", async (c) => {
   const tools = await list("agent_tools", `providerId="${provider.id}"`);
   if (tools.length)
     return c.json({ error: "Provider is still used by agent tools; disable it or remove those tools first" }, 409);
+  stopMcpSession(provider.id);
   if (provider.credentialId) await pb.collection("credentials").delete(String(provider.credentialId));
   await pb.collection("providers").delete(provider.id);
   await audit(user.id, "delete_provider", provider.id);

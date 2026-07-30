@@ -11,6 +11,7 @@ export function ToolsPage({ request }: { request: Request }) {
   const [selected, setSelected] = useState<RecordItem | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [deleting, setDeleting] = useState<RecordItem | null>(null);
+  const [showRotate, setShowRotate] = useState(false);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("All");
   const [usage, setUsage] = useState<RecordItem | null>(null);
@@ -98,6 +99,26 @@ export function ToolsPage({ request }: { request: Request }) {
     );
     await load();
   };
+  const rotateCredential = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selected) return;
+    const form = new FormData(event.currentTarget);
+    setError("");
+    try {
+      const provider = await request(`/api/providers/${selected.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          credentialName: form.get("credentialName"),
+          credentialSecret: form.get("credentialSecret"),
+        }),
+      });
+      setSelected(provider);
+      setShowRotate(false);
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Credential rotation failed");
+    }
+  };
   return (
     <div>
       <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
@@ -117,7 +138,7 @@ export function ToolsPage({ request }: { request: Request }) {
             <option>OpenAPI</option>
             <option>MCP</option>
           </select>
-          <input required name="endpoint" placeholder="Base URL or MCP HTTP endpoint" />
+          <input name="endpoint" placeholder="Base URL or MCP HTTP endpoint (not needed for command)" />
           <input name="schemaUrl" placeholder="OpenAPI schema URL (defaults to endpoint)" />
           <textarea name="schema" placeholder="Inline OpenAPI JSON (optional)" />
           <select name="transport">
@@ -245,6 +266,59 @@ export function ToolsPage({ request }: { request: Request }) {
                   </div>
                 </div>
                 <div>
+                  <h3 className="text-sm font-medium">Connection configuration</h3>
+                  <dl className="mt-3 space-y-2 text-sm">
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-slate-500">Transport</dt>
+                      <dd>{selected.configuration?.transport || "http"}</dd>
+                    </div>
+                    {selected.configuration?.transport === "command" && (
+                      <>
+                        <div className="flex justify-between gap-3">
+                          <dt className="text-slate-500">Startup</dt>
+                          <dd>{selected.configuration?.startup || "on-demand"}</dd>
+                        </div>
+                        <div className="flex justify-between gap-3">
+                          <dt className="text-slate-500">Environment variables</dt>
+                          <dd>{selected.configuration?.environment?.join(", ") || "None"}</dd>
+                        </div>
+                      </>
+                    )}
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-slate-500">Headers</dt>
+                      <dd>{selected.configuration?.headers?.join(", ") || "None"}</dd>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-slate-500">Authentication</dt>
+                      <dd>{selected.configuration?.auth?.type || "Bearer token"}</dd>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-slate-500">Credential</dt>
+                      <dd>
+                        {selected.credential ? `${selected.credential.name} (${selected.credential.masked})` : "None"}
+                      </dd>
+                    </div>
+                  </dl>
+                  <Button className="mt-4" size="sm" variant="outline" onClick={() => setShowRotate(!showRotate)}>
+                    Rotate credential
+                  </Button>
+                  {showRotate && (
+                    <form className="mt-3 grid gap-2 rounded border bg-slate-950/60 p-3" onSubmit={rotateCredential}>
+                      <input
+                        required
+                        name="credentialName"
+                        defaultValue={selected.credential?.name ?? ""}
+                        placeholder="Credential reference"
+                      />
+                      <input
+                        required
+                        name="credentialSecret"
+                        type="password"
+                        placeholder="New secret (stored encrypted)"
+                      />
+                      <Button size="sm">Save rotated credential</Button>
+                    </form>
+                  )}
                   <h3 className="text-sm font-medium">Current schema</h3>
                   <pre className="mt-3 max-h-[36rem] overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-300">
                     {JSON.stringify(selected.schema?.current ?? selected.schema ?? {}, null, 2)}
