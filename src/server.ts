@@ -1144,32 +1144,112 @@ app.delete("/api/projects/:id", async (c) => {
   return c.body(null, 204);
 });
 
+async function authorizedAgent(header?: string) {
+  const raw = header?.replace(/^Bearer\s+/i, "") ?? "";
+  const credential = (await list("agent_credentials", `tokenHash="${await sha256(raw)}"`))[0];
+  if (!credential || credential.revoked) return null;
+  const agent = await one("agents", String(credential.agentId));
+  return agent.enabled ? { credential, agent } : null;
+}
+async function invokeAgentTool(credential: RecordData, exposedName: string, input: Record<string, unknown>) {
+  const tool = (await list("agent_tools", `agentId="${credential.agentId}" && exposedName="${exposedName}"`))[0];
+  if (!tool) throw new Error("Tool not authorized");
+  const provider = await one("providers", String(tool.providerId));
+  if (provider.disabled || provider.status === "Unavailable") throw new Error("Provider unavailable");
+  validateAdapter(input, tool.inputSchema as Record<string, any>);
+  const mapped: Record<string, unknown> = { ...(tool.fixedArgs as object) };
+  for (const [from, to] of Object.entries(tool.inputMap as Record<string, string>)) mapped[to] = input[from];
+  const output = await invokeProvider(provider, String(tool.operation), mapped);
+  await pb.collection("agent_credentials").update(credential.id, { lastUsed: new Date().toISOString() });
+  return mappedOutput(output, tool.outputMap as Record<string, string>);
+}
 // Stateless harness endpoint. It accepts only an agent credential, never a web session.
 app.post("/api/v1/resolve/:tool", async (c) => {
-  const raw = c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") ?? "";
-  const credential = (await list("agent_credentials", `tokenHash="${await sha256(raw)}"`))[0];
-  if (!credential || credential.revoked) return c.json({ error: "Unauthorized" }, 401);
-  const tool = (
-    await list("agent_tools", `agentId="${credential.agentId}" && exposedName="${c.req.param("tool")}"`)
-  )[0];
-  if (!tool) return c.json({ error: "Tool not authorized" }, 403);
-  const agent = await one("agents", String(credential.agentId));
-  if (!agent.enabled) return c.json({ error: "Agent profile disabled" }, 403);
-  const provider = await one("providers", String(tool.providerId));
-  if (provider.disabled || provider.status === "Unavailable") return c.json({ error: "Provider unavailable" }, 503);
+  const authorized = await authorizedAgent(c.req.header("Authorization"));
+  if (!authorized) return c.json({ error: "Unauthorized" }, 401);
   try {
-    const input = (await c.req.json()) as Record<string, unknown>;
-    validateAdapter(input, tool.inputSchema as Record<string, any>);
-    const mapped: Record<string, unknown> = { ...(tool.fixedArgs as object) };
-    for (const [from, to] of Object.entries(tool.inputMap as Record<string, string>)) mapped[to] = input[from];
-    const output = await invokeProvider(provider, String(tool.operation), mapped);
-    await pb.collection("agent_credentials").update(credential.id, { lastUsed: new Date().toISOString() });
-    return c.json({ tool: tool.exposedName, output: mappedOutput(output, tool.outputMap as Record<string, string>) });
+    return c.json({
+      tool: c.req.param("tool"),
+      output: await invokeAgentTool(authorized.credential, c.req.param("tool"), await c.req.json()),
+    });
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : "Tool invocation failed" }, 422);
   }
 });
-
+app.post("/api/v1/tools/:tool", async (c) => {
+  const authorized = await authorizedAgent(c.req.header("Authorization"));
+  if (!authorized) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    return c.json({ output: await invokeAgentTool(authorized.credential, c.req.param("tool"), await c.req.json()) });
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Tool invocation failed" }, 422);
+  }
+});
+app.get("/api/v1/agents/:id/openapi.json", async (c) => {
+  const authorized = await authorizedAgent(c.req.header("Authorization"));
+  if (!authorized || authorized.agent.id !== c.req.param("id")) return c.json({ error: "Unauthorized" }, 401);
+  const tools = await list("agent_tools", `agentId="${authorized.agent.id}"`);
+  const paths = Object.fromEntries(
+    tools.map((tool) => [
+      `/tools/${encodeURIComponent(String(tool.exposedName))}`,
+      {
+        post: {
+          operationId: tool.exposedName,
+          summary: tool.description,
+          security: [{ bearerAuth: [] }],
+          requestBody: { required: true, content: { "application/json": { schema: tool.inputSchema || {} } } },
+          responses: { 200: { description: "Tool result" } },
+        },
+      },
+    ]),
+  );
+  return c.json({
+    openapi: "3.1.0",
+    info: { title: `${authorized.agent.name} tools`, version: "1.0.0" },
+    servers: [{ url: new URL(c.req.url).origin + "/api/v1" }],
+    paths,
+    components: { securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } } },
+  });
+});
+app.post("/api/v1/mcp", async (c) => {
+  const request = (await c.req.json()) as { id?: string | number; method?: string; params?: Record<string, any> };
+  const respond = (result?: unknown, error?: { code: number; message: string }) =>
+    c.json({ jsonrpc: "2.0", id: request.id ?? null, ...(error ? { error } : { result }) });
+  const authorized = await authorizedAgent(c.req.header("Authorization"));
+  if (!authorized) return respond(undefined, { code: -32001, message: "Unauthorized" });
+  if (request.method === "initialize")
+    return respond({
+      protocolVersion: "2024-11-05",
+      capabilities: { tools: {} },
+      serverInfo: { name: "subpolar", version: "1.0.0" },
+    });
+  if (request.method === "tools/list") {
+    const tools = await list("agent_tools", `agentId="${authorized.agent.id}"`);
+    return respond({
+      tools: tools.map((tool) => ({
+        name: tool.exposedName,
+        description: tool.description,
+        inputSchema: tool.inputSchema || {},
+      })),
+    });
+  }
+  if (request.method === "tools/call") {
+    try {
+      const output = await invokeAgentTool(
+        authorized.credential,
+        String(request.params?.name ?? ""),
+        request.params?.arguments ?? {},
+      );
+      return respond({ content: [{ type: "text", text: JSON.stringify(output) }] });
+    } catch (error) {
+      return respond(undefined, {
+        code: -32002,
+        message: error instanceof Error ? error.message : "Tool invocation failed",
+      });
+    }
+  }
+  return respond(undefined, { code: -32601, message: "Method not found" });
+});
 async function authorizedWorkspace(c: Context, capability: string) {
   const scoped = await workspaceForCredential(c);
   if (!scoped) return null;
