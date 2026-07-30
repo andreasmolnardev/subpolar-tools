@@ -3,12 +3,24 @@ import { cors } from "hono/cors";
 import { serveStatic } from "hono/bun";
 import PocketBase from "pocketbase";
 import { z } from "zod";
+import {
+  assertWorkspacePath as assertManagedWorkspacePath,
+  decryptSecret as decryptStoredSecret,
+  encryptSecret as encryptStoredSecret,
+  isAdminOrGranted,
+  mapAdapterInput,
+  mappedOutput,
+  safeWorkspacePath,
+  schemaChanged,
+  validateAdapter,
+} from "./lib/runtime";
 
 const pbUrl = process.env.PB_URL ?? "http://127.0.0.1:8090";
 const pb = new PocketBase(pbUrl);
 const app = new Hono();
 const adminEmail = process.env.SUBPOLAR_ADMIN_EMAIL ?? "admin@example.com";
 const adminPassword = process.env.SUBPOLAR_ADMIN_PASSWORD ?? "development-only-password";
+const dockerCommand = process.env.DOCKER_BIN ?? "/usr/bin/docker";
 const auditRetentionDays = Math.max(1, Number(process.env.SUBPOLAR_AUDIT_RETENTION_DAYS ?? 365));
 const rateLimitRetentionMs = 15 * 60_000;
 type McpSession = {
@@ -28,29 +40,10 @@ const sha256 = async (value: string) =>
 const token = () => crypto.getRandomValues(new Uint8Array(32)).toBase64({ alphabet: "base64url", omitPadding: true });
 async function encryptSecret(value: string) {
   // The deployment secret is kept outside PocketBase so a database backup alone cannot reveal provider credentials.
-  const material = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(process.env.SUBPOLAR_SECRET_KEY ?? adminPassword),
-  );
-  const key = await crypto.subtle.importKey("raw", material, "AES-GCM", false, ["encrypt"]);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(value));
-  return `${Buffer.from(iv).toString("base64url")}.${Buffer.from(encrypted).toString("base64url")}`;
+  return encryptStoredSecret(value, process.env.SUBPOLAR_SECRET_KEY ?? adminPassword);
 }
 async function decryptSecret(value: string) {
-  const [ivText, ciphertext] = value.split(".");
-  if (!ivText || !ciphertext) throw new Error("Invalid credential ciphertext");
-  const material = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(process.env.SUBPOLAR_SECRET_KEY ?? adminPassword),
-  );
-  const key = await crypto.subtle.importKey("raw", material, "AES-GCM", false, ["decrypt"]);
-  const plain = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: Buffer.from(ivText, "base64url") },
-    key,
-    Buffer.from(ciphertext, "base64url"),
-  );
-  return new TextDecoder().decode(plain);
+  return decryptStoredSecret(value, process.env.SUBPOLAR_SECRET_KEY ?? adminPassword);
 }
 
 async function ensureCollection(name: string, type: "base" | "auth", fields: object[]) {
@@ -223,8 +216,8 @@ function redactAuditDetails(value: unknown): unknown {
 }
 
 async function pruneAuditEvents() {
-  const cutoff = new Date(Date.now() - auditRetentionDays * 24 * 60 * 60 * 1000).toISOString();
-  const expired = await list("audit_events", `created < "${cutoff}"`);
+  const cutoff = Date.now() - auditRetentionDays * 24 * 60 * 60 * 1000;
+  const expired = (await list("audit_events")).filter((event) => Date.parse(String(event.created)) < cutoff);
   await Promise.all(expired.map((event) => pb.collection("audit_events").delete(event.id)));
 }
 
@@ -284,8 +277,9 @@ async function hasGrant(
   field: "agentId" | "projectId",
   id: string,
 ) {
-  return (
-    user.platformRole === "Admin" || Boolean((await list(collection, `userId="${user.id}" && ${field}="${id}"`))[0])
+  return isAdminOrGranted(
+    user.platformRole,
+    Boolean((await list(collection, `userId="${user.id}" && ${field}="${id}"`))[0]),
   );
 }
 async function canAccessAgent(user: RecordData, agent: RecordData) {
@@ -307,14 +301,17 @@ async function rateLimited(c: Context, bucket: string, limit = 5, windowMs = 60_
       ? (c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown")
       : "unknown";
   const key = await sha256(`${bucket}:${address}`);
-  const cutoff = new Date(Date.now() - windowMs).toISOString();
-  const retentionCutoff = new Date(Date.now() - Math.max(windowMs, rateLimitRetentionMs)).toISOString();
+  const cutoff = Date.now() - windowMs;
+  const retentionCutoff = Date.now() - Math.max(windowMs, rateLimitRetentionMs);
   try {
-    const expired = await list("rate_limit_events", `created < "${retentionCutoff}"`);
+    const events = await list("rate_limit_events");
+    const expired = events.filter((event) => Date.parse(String(event.created)) < retentionCutoff);
     await Promise.all(expired.map((event) => pb.collection("rate_limit_events").delete(event.id)));
     await pb.collection("rate_limit_events").create({ bucket, key });
     return (
-      (await list("rate_limit_events", `bucket="${bucket}" && key="${key}" && created >= "${cutoff}"`)).length > limit
+      events.filter(
+        (event) => event.bucket === bucket && event.key === key && Date.parse(String(event.created)) >= cutoff,
+      ).length >= limit
     );
   } catch (error) {
     console.error("Rate-limit storage unavailable", error);
@@ -613,24 +610,12 @@ async function discover(provider: RecordData) {
     }
   }
   const prior = provider.schema as Record<string, unknown>;
-  const changed = JSON.stringify(prior?.current ?? null) !== JSON.stringify(current);
+  const changed = schemaChanged(prior?.current, current);
   return await pb.collection("providers").update(provider.id, {
     schema: { current, previous: prior?.current ?? null, changed, discoveredAt: new Date().toISOString() },
     status: "Available",
     lastConnected: new Date().toISOString(),
   });
-}
-function validateAdapter(input: Record<string, unknown>, schema: Record<string, any>) {
-  const required = Array.isArray(schema.required) ? schema.required : [];
-  for (const field of required)
-    if (input[field] === undefined) throw new Error(`Missing required input field: ${field}`);
-}
-function mappedOutput(value: unknown, outputMap: Record<string, string>) {
-  if (!Object.keys(outputMap).length) return value;
-  const result: Record<string, unknown> = {};
-  for (const [visible, source] of Object.entries(outputMap))
-    result[visible] = source.split(".").reduce<any>((current, key) => current?.[key], value);
-  return result;
 }
 async function invokeProvider(provider: RecordData, operationName: string, input: Record<string, unknown>) {
   const configuration = configOf(provider);
@@ -691,11 +676,6 @@ async function invokeProvider(provider: RecordData, operationName: string, input
     );
   return body;
 }
-function safeWorkspacePath(root: string, requested: string) {
-  const path = requested.replace(/^\/+/, "");
-  if (path.split("/").includes("..") || path.includes("\0")) throw new Error("Path escapes workspace");
-  return `${root}/${path}`;
-}
 function commandOutput(command: string[], timeout = 60000) {
   const process = Bun.spawnSync(command, { timeout });
   if (process.exitCode !== 0) throw new Error(process.stderr.toString() || `Command failed with ${process.exitCode}`);
@@ -705,10 +685,7 @@ function workspaceRoot() {
   return process.env.WORKSPACE_ROOT ?? "/var/lib/subpolar/workspaces";
 }
 function assertWorkspacePath(path: string) {
-  const root = workspaceRoot();
-  if (!path.startsWith(`${root}/`) || path.slice(root.length + 1).includes("/.."))
-    throw new Error("Workspace path is outside the managed workspace root");
-  return path;
+  return assertManagedWorkspacePath(workspaceRoot(), path);
 }
 async function projectGitEnvironment(project: RecordData) {
   const integration = ((project.sandboxDefaults ?? {}) as Record<string, any>).gitIntegration as
@@ -1346,8 +1323,7 @@ app.post("/api/agents/:id/tools/:toolId/test", async (c) => {
   try {
     const input = await c.req.json();
     validateAdapter(input, tool.inputSchema as Record<string, any>);
-    const mapped: Record<string, unknown> = { ...(tool.fixedArgs as object) };
-    for (const [from, to] of Object.entries(tool.inputMap as Record<string, string>)) mapped[to] = input[from];
+    const mapped = mapAdapterInput(input, tool);
     const output = await invokeProvider(
       await one("providers", String(tool.providerId)),
       String(tool.operation),
@@ -1752,11 +1728,11 @@ app.get("/api/workspaces/:id/inspect", async (c) => {
     diff = changes.stdout.toString();
   }
   const docker = workspace.sandboxId
-    ? Bun.spawnSync(["docker", "inspect", "--format", "{{.State.Status}}", String(workspace.sandboxId)])
+    ? Bun.spawnSync([dockerCommand, "inspect", "--format", "{{.State.Status}}", String(workspace.sandboxId)])
     : null;
   const stats = workspace.sandboxId
     ? Bun.spawnSync([
-        "docker",
+        dockerCommand,
         "stats",
         "--no-stream",
         "--format",
@@ -1781,7 +1757,9 @@ app.get("/api/workspaces/:id/logs", async (c) => {
   if (!(await requireUser(c, true))) return c.json({ error: "Forbidden" }, 403);
   const workspace = await one("workspaces", c.req.param("id"));
   if (!workspace.sandboxId) return c.json({ logs: "Sandbox is stopped" });
-  const result = Bun.spawnSync(["docker", "logs", "--tail", "500", String(workspace.sandboxId)], { timeout: 60_000 });
+  const result = Bun.spawnSync([dockerCommand, "logs", "--tail", "500", String(workspace.sandboxId)], {
+    timeout: 60_000,
+  });
   return c.json({ logs: result.stdout.toString() + result.stderr.toString() });
 });
 app.post("/api/workspaces/:id/git/:operation", async (c) => {
@@ -1856,7 +1834,7 @@ const createWorkspace = async (c: Context) => {
     const policy = (role.sandboxPolicy ?? project.sandboxDefaults ?? {}) as Record<string, unknown>;
     const image = String(policy.image ?? "alpine:3.21");
     const run = Bun.spawnSync([
-      "docker",
+      dockerCommand,
       ...(await sandboxArgs(worktreePath, handle, project.id, policy)),
       image,
       "sleep",
@@ -1912,7 +1890,7 @@ app.post("/api/workspaces/:id/start", async (c) => {
   const role = await one("roles", String(workspace.roleId));
   const policy = (role.sandboxPolicy ?? project.sandboxDefaults ?? {}) as Record<string, unknown>;
   const result = Bun.spawnSync([
-    "docker",
+    dockerCommand,
     ...(await sandboxArgs(String(workspace.worktreePath), String(workspace.handle), project.id, policy)),
     String(policy.image ?? "alpine:3.21"),
     "sleep",
@@ -1929,7 +1907,7 @@ app.post("/api/workspaces/:id/stop", async (c) => {
   const user = await requireUser(c, true);
   if (!user) return c.json({ error: "Forbidden" }, 403);
   const workspace = await one("workspaces", c.req.param("id"));
-  if (workspace.sandboxId) Bun.spawnSync(["docker", "rm", "-f", String(workspace.sandboxId)]);
+  if (workspace.sandboxId) Bun.spawnSync([dockerCommand, "rm", "-f", String(workspace.sandboxId)]);
   const updated = await pb.collection("workspaces").update(workspace.id, { sandboxId: "", sandboxState: "Stopped" });
   await audit(user.id, "stop_workspace", workspace.id);
   return c.json(json(updated));
@@ -1937,7 +1915,7 @@ app.post("/api/workspaces/:id/stop", async (c) => {
 async function releaseWorkspace(workspace: RecordData) {
   const path = assertWorkspacePath(String(workspace.worktreePath));
   const project = await one("projects", String(workspace.projectId));
-  if (workspace.sandboxId) Bun.spawnSync(["docker", "rm", "-f", String(workspace.sandboxId)], { timeout: 60_000 });
+  if (workspace.sandboxId) Bun.spawnSync([dockerCommand, "rm", "-f", String(workspace.sandboxId)], { timeout: 60_000 });
   if (project.repository) {
     const repositoryPath = `${workspaceRoot()}/repositories/${project.id}.git`;
     const result = Bun.spawnSync(["git", "--git-dir", repositoryPath, "worktree", "remove", "--force", path], {
@@ -2000,8 +1978,7 @@ async function invokeAgentTool(credential: RecordData, exposedName: string, inpu
   const provider = await one("providers", String(tool.providerId));
   if (provider.disabled || provider.status === "Unavailable") throw new Error("Provider unavailable");
   validateAdapter(input, tool.inputSchema as Record<string, any>);
-  const mapped: Record<string, unknown> = { ...(tool.fixedArgs as object) };
-  for (const [from, to] of Object.entries(tool.inputMap as Record<string, string>)) mapped[to] = input[from];
+  const mapped = mapAdapterInput(input, tool);
   const output = await invokeProvider(provider, String(tool.operation), mapped);
   await pb.collection("agent_credentials").update(credential.id, { lastUsed: new Date().toISOString() });
   return mappedOutput(output, tool.outputMap as Record<string, string>);
@@ -2131,8 +2108,7 @@ app.post("/api/v1/workspaces/:handle/tools/:tool", async (c) => {
   try {
     const input = await c.req.json();
     validateAdapter(input, tool.inputSchema as Record<string, any>);
-    const mapped: Record<string, unknown> = { ...(tool.fixedArgs as object) };
-    for (const [from, to] of Object.entries(tool.inputMap as Record<string, string>)) mapped[to] = input[from];
+    const mapped = mapAdapterInput(input, tool);
     const output = await invokeProvider(
       await one("providers", String(tool.providerId)),
       String(tool.operation),
@@ -2189,7 +2165,7 @@ app.post("/api/v1/workspaces/:handle/shell", async (c) => {
   if (!workspace) return c.json({ error: "Unauthorized" }, 401);
   const { command } = z.object({ command: z.string().min(1).max(10000) }).parse(await c.req.json());
   const role = await one("roles", String(workspace.roleId));
-  const result = Bun.spawnSync(["docker", "exec", String(workspace.sandboxId), "sh", "-lc", command], {
+  const result = Bun.spawnSync([dockerCommand, "exec", String(workspace.sandboxId), "sh", "-lc", command], {
     timeout: workspaceTimeout((role.sandboxPolicy ?? {}) as Record<string, unknown>),
   });
   await pb.collection("workspaces").update(workspace.id, { lastActivity: new Date().toISOString() });

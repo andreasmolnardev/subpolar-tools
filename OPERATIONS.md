@@ -17,3 +17,5 @@ Configure a project Git integration with a least-privilege token that can create
 ## Docker socket
 
 The main Subpolar container manages sandbox containers and consequently has access to `/var/run/docker.sock`. Do not expose that socket, the PocketBase port, or an unauthenticated management API. Run Subpolar on a dedicated host or isolate the Docker daemon, restrict administrator access, and use images from trusted registries.
+
+Set `SUBPOLAR_WORKSPACE_ROOT` to an absolute, Subpolar-owned host directory. Docker Compose mounts it at the identical path in the manager so child sandbox bind mounts resolve to the intended worktree. Do not point it at a shared home directory or any path containing unrelated repositories.

@@ -1,0 +1,23 @@
+services:
+  subpolar:
+    build: .
+    ports:
+      - "3100:3000"
+    environment:
+      SUBPOLAR_ADMIN_EMAIL: e2e@example.com
+      SUBPOLAR_ADMIN_PASSWORD: e2e-password-that-is-long-enough
+      SUBPOLAR_SECRET_KEY: e2e-secret-that-is-long-enough-to-encrypt-values
+      SUBPOLAR_ORIGIN: http://localhost:3100
+      WORKSPACE_ROOT: /tmp/opencode/subpolar-e2e-workspaces
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - e2e-data:/app/pb_data
+      - /tmp/opencode/subpolar-e2e-workspaces:/tmp/opencode/subpolar-e2e-workspaces
+  mock-provider:
+    image: oven/bun:1.3.13
+    working_dir: /fixtures
+    command: bun provider.ts
+    volumes:
+      - ./tests/fixtures:/fixtures:ro
+volumes:
+  e2e-data:

@@ -10,6 +10,7 @@
     "start": "bun src/server.ts",
     "test": "bun test",
     "test:integration": "bun test tests",
+    "test:e2e": "sh scripts/e2e.sh",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

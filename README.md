@@ -14,7 +14,9 @@ The main container starts PocketBase on the loopback interface and the Hono appl
 
 For local UI/API development, run `bun install` followed by `bun run dev`. A separately running PocketBase instance must be available at `PB_URL`.
 
-Run `bun test` for the test suite. With a running deployment, execute the session integration test with `SUBPOLAR_TEST_URL`, `SUBPOLAR_TEST_EMAIL`, and `SUBPOLAR_TEST_PASSWORD` set, then run `bun run test:integration`.
+Run `bun test` for fast unit coverage. With a running deployment, execute the session integration test with `SUBPOLAR_TEST_URL`, `SUBPOLAR_TEST_EMAIL`, and `SUBPOLAR_TEST_PASSWORD` set, then run `bun run test:integration`.
+
+Run `bun run test:e2e` to build an isolated Docker deployment and verify OpenAPI, MCP HTTP, MCP command/stdio, harness contracts, worktree creation, sandbox lifecycle, and cross-workspace path/mount/network isolation. It requires a local Docker daemon, pulls `alpine:3.21` when needed, and removes its dedicated volumes on exit. The suite is deliberately environment-gated: CI runs it only where Docker is available.
 
 ## Architecture
 
@@ -31,3 +33,5 @@ Run `bun test` for the test suite. With a running deployment, execute the sessio
 `spws_` role credentials access only a known opaque workspace handle through `/api/v1/workspaces/:handle/...`. The available filesystem, shell, and Git operations are individually checked against the role capabilities. There is deliberately no workspace enumeration API for these credentials.
 
 The main container has Docker socket access exclusively because it is the sandbox manager. Treat this container as privileged infrastructure and do not expose its management API without authentication.
+
+`SUBPOLAR_WORKSPACE_ROOT` is an absolute host path mounted at the same path in the manager container. Keep this location private to the Docker host: sharing the exact path lets child sandboxes mount only their own worktree while preventing the manager from accidentally bind-mounting an unrelated container filesystem path.
