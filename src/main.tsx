@@ -1,0 +1,510 @@
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { createRoot } from "react-dom/client";
+import {
+  Activity,
+  Bot,
+  Boxes,
+  Cable,
+  FolderGit2,
+  KeyRound,
+  LayoutDashboard,
+  LogOut,
+  Plus,
+  Settings,
+  ShieldCheck,
+  Users,
+} from "lucide-react";
+import { Button } from "./components/ui/button";
+import { ConfirmDialog } from "./components/ui/dialog";
+import { AgentsPage } from "./pages/agents";
+import { ProjectsPage } from "./pages/projects";
+import { SettingsPage } from "./pages/settings";
+import { ToolsPage } from "./pages/tools";
+import { UsersPage } from "./pages/users";
+import "./web.css";
+
+type Item = Record<string, any>;
+const api = async (path: string, options: RequestInit = {}) => {
+  const token = localStorage.getItem("subpolar-token");
+  const res = await fetch(path, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options.headers,
+    },
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Request failed");
+  return res.status === 204 ? null : res.json();
+};
+const nav = [
+  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { id: "tools", label: "All Tools", icon: Cable },
+  { id: "agents", label: "Agents", icon: Bot },
+  { id: "projects", label: "Projects", icon: FolderGit2 },
+  { id: "users", label: "Users", icon: Users },
+  { id: "settings", label: "Settings", icon: Settings },
+];
+function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return <section className={`rounded-xl border bg-slate-900/60 p-5 ${className}`}>{children}</section>;
+}
+function Header({ title, subtitle, action }: { title: string; subtitle: string; action?: ReactNode }) {
+  return (
+    <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+        <p className="mt-1 text-sm text-slate-400">{subtitle}</p>
+      </div>
+      {action}
+    </div>
+  );
+}
+function Login({ onLogin }: { onLogin(user: Item): void }) {
+  const [error, setError] = useState("");
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    try {
+      const result = await api("/api/auth/sign-in", {
+        method: "POST",
+        body: JSON.stringify({ email: form.get("email"), password: form.get("password") }),
+      });
+      localStorage.setItem("subpolar-token", result.token);
+      onLogin(result.user);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Sign in failed");
+    }
+  };
+  return (
+    <main className="grid min-h-screen place-items-center p-6">
+      <form
+        onSubmit={submit}
+        className="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900 p-7 shadow-2xl"
+      >
+        <div className="mb-7 flex items-center gap-3">
+          <div className="grid h-10 w-10 place-items-center rounded-lg bg-cyan-400 text-slate-950">
+            <Boxes size={22} />
+          </div>
+          <div>
+            <h1 className="font-semibold">Subpolar Tools</h1>
+            <p className="text-xs text-slate-400">Administration console</p>
+          </div>
+        </div>
+        <label>
+          Email
+          <input required name="email" type="email" placeholder="admin@example.com" />
+        </label>
+        <label className="mt-4 block">
+          Password
+          <input required name="password" type="password" minLength={12} />
+        </label>
+        {error && <p className="mt-3 text-sm text-rose-400">{error}</p>}
+        <Button className="mt-6 w-full">Sign in</Button>
+        <p className="mt-4 text-center text-xs text-slate-500">
+          Forgotten passwords use the configured PocketBase email delivery.
+        </p>
+      </form>
+    </main>
+  );
+}
+function Tools() {
+  const [providers, setProviders] = useState<Item[]>([]);
+  const [show, setShow] = useState(false);
+  const load = () => api("/api/providers").then(setProviders);
+  useEffect(() => {
+    void load();
+  }, []);
+  const create = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    await api("/api/providers", {
+      method: "POST",
+      body: JSON.stringify({
+        name: f.get("name"),
+        kind: f.get("kind"),
+        endpoint: f.get("endpoint"),
+        configuration: { timeout: Number(f.get("timeout")) },
+        schema: {},
+      }),
+    });
+    setShow(false);
+    void load();
+  };
+  return (
+    <>
+      <Header
+        title="All Tools"
+        subtitle="Central MCP and OpenAPI provider configuration."
+        action={
+          <Button onClick={() => setShow(!show)}>
+            <Plus size={16} className="mr-2" />
+            Add provider
+          </Button>
+        }
+      />
+      {show && (
+        <Card className="mb-6">
+          <form className="grid gap-3 md:grid-cols-4" onSubmit={create}>
+            <input required name="name" placeholder="Display name" />
+            <select name="kind">
+              <option>MCP</option>
+              <option>OpenAPI</option>
+            </select>
+            <input required name="endpoint" placeholder="Server URL or command" />
+            <input name="timeout" type="number" defaultValue="5000" />
+            <Button className="md:col-span-4">Save and discover</Button>
+          </form>
+        </Card>
+      )}
+      <div className="grid gap-4">
+        {providers.map((p) => (
+          <Card key={p.id}>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2 font-medium">
+                  <Cable size={16} className="text-cyan-400" />
+                  {p.name}
+                  <span className="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-400">{p.kind}</span>
+                </div>
+                <p className="mt-1 text-sm text-slate-500">{p.endpoint}</p>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className={p.status === "Available" ? "text-emerald-400" : "text-amber-400"}>
+                  {p.disabled ? "Disabled" : p.status}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    await api(`/api/providers/${p.id}/test`, { method: "POST" });
+                    void load();
+                  }}
+                >
+                  Test connection
+                </Button>
+              </div>
+            </div>
+          </Card>
+        ))}
+        {!providers.length && <Empty text="No providers are configured. Add MCP or OpenAPI tooling to begin." />}
+      </div>
+    </>
+  );
+}
+function Agents() {
+  const [agents, setAgents] = useState<Item[]>([]);
+  const [creating, setCreating] = useState(false);
+  const [secret, setSecret] = useState("");
+  const load = () => api("/api/agents").then(setAgents);
+  useEffect(() => {
+    void load();
+  }, []);
+  const create = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    await api("/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: f.get("name"), description: f.get("description") }),
+    });
+    setCreating(false);
+    void load();
+  };
+  return (
+    <>
+      <Header
+        title="Agents"
+        subtitle="Stateless authorization and tool-presentation profiles, not running agents."
+        action={
+          <Button onClick={() => setCreating(!creating)}>
+            <Plus size={16} className="mr-2" />
+            New profile
+          </Button>
+        }
+      />
+      {creating && (
+        <Card className="mb-6">
+          <form onSubmit={create} className="grid gap-3 md:grid-cols-3">
+            <input required name="name" placeholder="Profile name" />
+            <input name="description" placeholder="Description" />
+            <Button>Create profile</Button>
+          </form>
+        </Card>
+      )}
+      {secret && (
+        <Card className="mb-6 border-cyan-700">
+          <p className="font-medium">Copy this credential now. It will not be shown again.</p>
+          <code className="mt-3 block overflow-auto rounded bg-slate-950 p-3 text-cyan-300">{secret}</code>
+          <Button className="mt-3" variant="outline" onClick={() => setSecret("")}>
+            I stored it
+          </Button>
+        </Card>
+      )}
+      <div className="grid gap-4 md:grid-cols-2">
+        {agents.map((agent) => (
+          <Card key={agent.id}>
+            <div className="flex justify-between">
+              <div>
+                <h2 className="font-medium">{agent.name}</h2>
+                <p className="mt-1 min-h-10 text-sm text-slate-400">{agent.description || "No description"}</p>
+              </div>
+              <span className={agent.enabled ? "text-emerald-400 text-sm" : "text-slate-500 text-sm"}>
+                {agent.enabled ? "Enabled" : "Disabled"}
+              </span>
+            </div>
+            <div className="mt-5 flex items-center justify-between border-t pt-4 text-sm text-slate-400">
+              <span>{agent.toolCount} exposed tools</span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  const r = await api(`/api/agents/${agent.id}/credentials`, {
+                    method: "POST",
+                    body: JSON.stringify({ name: "Admin-created credential" }),
+                  });
+                  setSecret(r.secret);
+                }}
+              >
+                Generate credential
+              </Button>
+            </div>
+          </Card>
+        ))}
+        {!agents.length && <Empty text="Profiles define only what an external harness may call." />}
+      </div>
+    </>
+  );
+}
+function Projects() {
+  const [projects, setProjects] = useState<Item[]>([]);
+  const [show, setShow] = useState(false);
+  const load = () => api("/api/projects").then(setProjects);
+  useEffect(() => {
+    void load();
+  }, []);
+  const create = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    await api("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({
+        name: f.get("name"),
+        description: f.get("description"),
+        gitProvider: f.get("provider"),
+        repository: f.get("repository"),
+        defaultBranch: f.get("branch"),
+        createDefaultDeveloperRole: true,
+      }),
+    });
+    setShow(false);
+    void load();
+  };
+  return (
+    <>
+      <Header
+        title="Projects"
+        subtitle="Repository-backed roles, worktrees, and isolated sandbox environments."
+        action={
+          <Button onClick={() => setShow(!show)}>
+            <Plus size={16} className="mr-2" />
+            Create project
+          </Button>
+        }
+      />
+      {show && (
+        <Card className="mb-6">
+          <form className="grid gap-3 md:grid-cols-2" onSubmit={create}>
+            <input required name="name" placeholder="Project name" />
+            <input name="description" placeholder="Description" />
+            <select name="provider">
+              <option>Gitea</option>
+              <option>GitHub</option>
+              <option>GitLab</option>
+              <option>Generic</option>
+              <option>Local</option>
+            </select>
+            <input name="repository" placeholder="Repository URL (optional)" />
+            <input name="branch" defaultValue="main" />
+            <label className="flex items-center gap-2 text-sm">
+              <input checked readOnly type="checkbox" className="h-4 w-4" />
+              Create default developer role
+            </label>
+            <Button className="md:col-span-2">Create project</Button>
+          </form>
+        </Card>
+      )}
+      <div className="grid gap-4">
+        {projects.map((p) => (
+          <Card key={p.id}>
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h2 className="font-medium">{p.name}</h2>
+                <p className="mt-1 text-sm text-slate-400">
+                  {p.repository || "Local-only repository"} · {p.defaultBranch}
+                </p>
+              </div>
+              <div className="flex gap-6 text-sm">
+                <span>
+                  <b>{p.roleCount}</b> roles
+                </span>
+                <span>
+                  <b>{p.workspaceCount}</b> workspaces
+                </span>
+                <span className="text-cyan-400">{p.gitProvider}</span>
+              </div>
+            </div>
+          </Card>
+        ))}
+        {!projects.length && <Empty text="Create a project to configure roles and isolated coding workspaces." />}
+      </div>
+    </>
+  );
+}
+function LegacyUsersPage() {
+  const [users, setUsers] = useState<Item[]>([]);
+  const load = () => api("/api/users").then(setUsers);
+  useEffect(() => {
+    void load();
+  }, []);
+  return (
+    <>
+      <Header title="Users" subtitle="Platform access, administrative roles, and security status." />
+      <Card>
+        {users.map((user) => (
+          <div key={user.id} className="flex items-center justify-between border-b py-4 last:border-0">
+            <div>
+              <p className="font-medium">{user.displayName || user.email}</p>
+              <p className="text-sm text-slate-500">{user.email}</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="rounded bg-slate-800 px-2 py-1 text-xs">{user.platformRole}</span>
+              <Button
+                variant={user.enabled ? "outline" : "default"}
+                size="sm"
+                onClick={async () => {
+                  await api(`/api/users/${user.id}`, {
+                    method: "PATCH",
+                    body: JSON.stringify({ enabled: !user.enabled }),
+                  });
+                  void load();
+                }}
+              >
+                {user.enabled ? "Disable" : "Enable"}
+              </Button>
+            </div>
+          </div>
+        ))}
+        {!users.length && <Empty text="No users found." />}
+      </Card>
+    </>
+  );
+}
+function Dashboard() {
+  const [counts, setCounts] = useState({ providers: 0, agents: 0, projects: 0 });
+  useEffect(() => {
+    Promise.all([api("/api/providers"), api("/api/agents"), api("/api/projects")]).then(
+      ([providers, agents, projects]) =>
+        setCounts({ providers: providers.length, agents: agents.length, projects: projects.length }),
+    );
+  }, []);
+  return (
+    <>
+      <Header title="Dashboard" subtitle="Platform health and configuration overview." />
+      <div className="grid gap-4 md:grid-cols-3">
+        {[
+          ["Providers", counts.providers, Cable],
+          ["Agent profiles", counts.agents, Bot],
+          ["Projects", counts.projects, FolderGit2],
+        ].map(([label, count, Icon]: any) => (
+          <Card key={label}>
+            <Icon className="text-cyan-400" />
+            <p className="mt-6 text-3xl font-semibold">{count}</p>
+            <p className="text-sm text-slate-400">{label}</p>
+          </Card>
+        ))}
+      </div>
+      <Card className="mt-5">
+        <div className="flex gap-3">
+          <ShieldCheck className="text-emerald-400" />
+          <div>
+            <h2 className="font-medium">Control plane ready</h2>
+            <p className="mt-1 text-sm text-slate-400">
+              The web console configures infrastructure. External harnesses consume stateless agent and workspace APIs.
+            </p>
+          </div>
+        </div>
+      </Card>
+    </>
+  );
+}
+function Empty({ text }: { text: string }) {
+  return (
+    <Card>
+      <p className="text-sm text-slate-400">{text}</p>
+    </Card>
+  );
+}
+function App() {
+  const [user, setUser] = useState<Item | null>(null);
+  const [page, setPage] = useState("dashboard");
+  useEffect(() => {
+    if (localStorage.getItem("subpolar-token"))
+      api("/api/me")
+        .then(setUser)
+        .catch(() => localStorage.removeItem("subpolar-token"));
+  }, []);
+  if (!user) return <Login onLogin={setUser} />;
+  const Page =
+    page === "tools"
+      ? () => <ToolsPage request={api} />
+      : page === "agents"
+        ? () => <AgentsPage request={api} />
+        : page === "projects"
+          ? () => <ProjectsPage request={api} />
+          : page === "users"
+            ? () => <UsersPage request={api} />
+            : page === "settings"
+              ? () => <SettingsPage request={api} user={user} onUser={setUser} />
+              : Dashboard;
+  return (
+    <div className="min-h-screen md:flex">
+      <aside className="flex w-full shrink-0 flex-col border-b border-slate-800 bg-slate-950 md:sticky md:top-0 md:h-screen md:w-64 md:border-b-0 md:border-r">
+        <div className="flex items-center gap-3 p-5">
+          <div className="grid h-8 w-8 place-items-center rounded bg-cyan-400 text-slate-950">
+            <Boxes size={18} />
+          </div>
+          <b>Subpolar Tools</b>
+        </div>
+        <nav className="flex gap-1 overflow-x-auto px-3 pb-3 md:block">
+          {nav.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              onClick={() => setPage(id)}
+              className={`flex shrink-0 items-center gap-3 rounded-md px-3 py-2 text-sm md:mb-1 md:w-full ${page === id ? "bg-slate-800 text-cyan-300" : "text-slate-400 hover:bg-slate-900 hover:text-slate-100"}`}
+            >
+              <Icon size={17} />
+              {label}
+            </button>
+          ))}
+        </nav>
+        <div className="hidden mt-auto border-t border-slate-800 p-4 md:block">
+          <p className="truncate text-sm">{user.displayName || user.email}</p>
+          <button
+            onClick={() => {
+              api("/api/auth/sign-out", { method: "POST" });
+              localStorage.removeItem("subpolar-token");
+              setUser(null);
+            }}
+            className="mt-2 flex items-center gap-2 text-xs text-slate-400 hover:text-white"
+          >
+            <LogOut size={14} />
+            Sign out
+          </button>
+        </div>
+      </aside>
+      <main className="w-full p-5 md:p-10">
+        <Page />
+      </main>
+    </div>
+  );
+}
+createRoot(document.getElementById("root")!).render(<App />);
