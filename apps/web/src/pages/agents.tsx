@@ -1,12 +1,18 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Bot, KeyRound, Play, Plus, Power, Trash2, Wrench } from "lucide-react";
 import { Button } from "../components/ui/button";
-import { ConfirmDialog } from "../components/ui/dialog";
+import { ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogTitle } from "../components/ui/dialog";
 
 type RecordItem = Record<string, any>;
 type Request = (path: string, options?: RequestInit) => Promise<any>;
 
-export function AgentsPage({ request }: { request: Request }) {
+export function AgentsPage({
+  request,
+  initialId,
+}: {
+  request: Request;
+  initialId?: string;
+}) {
   const [agents, setAgents] = useState<RecordItem[]>([]);
   const [providers, setProviders] = useState<RecordItem[]>([]);
   const [selected, setSelected] = useState<RecordItem | null>(null);
@@ -14,7 +20,7 @@ export function AgentsPage({ request }: { request: Request }) {
   const [credentials, setCredentials] = useState<RecordItem[]>([]);
   const [contract, setContract] = useState<RecordItem | null>(null);
   const [secret, setSecret] = useState("");
-  const [showCreate, setShowCreate] = useState(false);
+  const [showCreate, setShowCreate] = useState(initialId === "create");
   const [showTool, setShowTool] = useState(false);
   const [editingTool, setEditingTool] = useState<RecordItem | null>(null);
   const [editingAgent, setEditingAgent] = useState(false);
@@ -43,6 +49,10 @@ export function AgentsPage({ request }: { request: Request }) {
   useEffect(() => {
     void load();
   }, []);
+  useEffect(() => {
+    const agent = agents.find((item) => item.id === initialId);
+    if (agent && selected?.id !== agent.id) void select(agent);
+  }, [agents, initialId]);
 
   const createAgent = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -160,6 +170,7 @@ export function AgentsPage({ request }: { request: Request }) {
     link.click();
     URL.revokeObjectURL(url);
   };
+  const focused = Boolean(initialId && initialId !== "create");
 
   return (
     <div>
@@ -175,13 +186,19 @@ export function AgentsPage({ request }: { request: Request }) {
           New profile
         </Button>
       </div>
-      {showCreate && (
-        <form className="mb-6 grid gap-3 rounded-xl border bg-slate-950/70 p-5 md:grid-cols-3" onSubmit={createAgent}>
-          <input required name="name" placeholder="Profile name" />
-          <input name="description" placeholder="Description" />
-          <Button>Create profile</Button>
-        </form>
-      )}
+      <Dialog open={showCreate} onOpenChange={setShowCreate}>
+        <DialogContent>
+          <DialogTitle>New agent profile</DialogTitle>
+          <DialogDescription className="mt-1 text-sm text-slate-400">
+            Create a profile that controls which tools an external harness may call.
+          </DialogDescription>
+          <form className="mt-5 grid gap-3" onSubmit={createAgent}>
+            <input required name="name" placeholder="Profile name" />
+            <input name="description" placeholder="Description" />
+            <Button>Create profile</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
       {secret && (
         <div className="mb-6 rounded-xl border border-blue-700 bg-slate-900 p-5">
           <p className="font-medium">Store this credential now. It will not be displayed again.</p>
@@ -191,8 +208,8 @@ export function AgentsPage({ request }: { request: Request }) {
           </Button>
         </div>
       )}
-      <div className="grid gap-5 lg:grid-cols-[19rem_1fr]">
-        <aside className="space-y-2">
+      <div className={`grid gap-5 ${focused ? "lg:grid-cols-1" : "lg:grid-cols-[19rem_1fr]"}`}>
+        {!focused && <aside className="space-y-2">
           {agents.map((agent) => (
             <button
               key={agent.id}
@@ -209,7 +226,7 @@ export function AgentsPage({ request }: { request: Request }) {
           {!agents.length && (
             <p className="rounded-lg border p-4 text-sm text-slate-400">Create a profile to expose provider tools.</p>
           )}
-        </aside>
+        </aside>}
                 <section className="min-w-0 rounded-xl border bg-slate-950/70 p-5">
           {selected ? (
             <>

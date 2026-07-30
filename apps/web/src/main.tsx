@@ -7,12 +7,9 @@ import {
   Boxes,
   Cable,
   FolderGit2,
-  KeyRound,
-  LogOut,
   Plus,
   Settings,
   ShieldCheck,
-  Users,
 } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "./components/ui/card";
@@ -39,13 +36,6 @@ const api = async (path: string, options: RequestInit = {}) => {
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Request failed");
   return res.status === 204 ? null : res.json();
 };
-const nav = [
-  { id: "tools", label: "All Tools", icon: Cable },
-  { id: "agents", label: "Agents", icon: Bot },
-  { id: "projects", label: "Projects", icon: FolderGit2 },
-  { id: "users", label: "Users", icon: Users },
-  { id: "settings", label: "Settings", icon: Settings },
-];
 function Header({ title, subtitle, action }: { title: string; subtitle: string; action?: ReactNode }) {
   return (
     <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
@@ -526,6 +516,8 @@ function Empty({ text }: { text: string }) {
 function App() {
   const [user, setUser] = useState<Item | null>(null);
   const [page, setPage] = useState("tools");
+  const [agents, setAgents] = useState<Item[]>([]);
+  const [projects, setProjects] = useState<Item[]>([]);
   useEffect(() => {
     if (localStorage.getItem("subpolar-token") || sessionStorage.getItem("subpolar-token"))
       api("/api/me")
@@ -533,20 +525,34 @@ function App() {
          .catch(() => {
            localStorage.removeItem("subpolar-token");
            sessionStorage.removeItem("subpolar-token");
-         });
+          });
   }, []);
+  useEffect(() => {
+    if (!user) return;
+    void Promise.all([api("/api/agents"), api("/api/projects")]).then(([nextAgents, nextProjects]) => {
+      setAgents(nextAgents);
+      setProjects(nextProjects);
+    });
+  }, [user]);
   if (!user) return <Login onLogin={setUser} />;
+  const [pageType, pageId] = page.split(":");
+  const signOut = () => {
+    void api("/api/auth/sign-out", { method: "POST" });
+    localStorage.removeItem("subpolar-token");
+    sessionStorage.removeItem("subpolar-token");
+    setUser(null);
+  };
   const Page =
-    page === "tools"
+    pageType === "tools"
       ? () => <ToolsPage request={api} />
-      : page === "agents"
-        ? () => <AgentsPage request={api} />
-        : page === "projects"
-          ? () => <ProjectsPage request={api} />
-          : page === "users"
+      : pageType === "agents"
+        ? () => <AgentsPage request={api} initialId={pageId} />
+        : pageType === "projects"
+          ? () => <ProjectsPage request={api} initialId={pageId} />
+          : pageType === "users"
             ? () => <UsersPage request={api} />
-            : page === "settings"
-              ? () => <SettingsPage request={api} user={user} onUser={setUser} />
+            : pageType === "settings"
+              ? () => <SettingsPage request={api} user={user} onUser={setUser} onSignOut={signOut} />
                : () => <ToolsPage request={api} />;
   return (
     <div className="min-h-screen md:flex">
@@ -557,32 +563,67 @@ function App() {
           </div>
           <b>Subpolar Tools</b>
         </div>
-        <nav className="flex gap-1 overflow-x-auto px-3 pb-3 md:block">
-          {nav.map(({ id, label, icon: Icon }) => (
+        <nav className="flex gap-1 overflow-x-auto px-3 pb-3 md:block md:flex-1 md:overflow-y-auto">
+          <div className="mb-5">
+            <div className="flex items-center justify-between px-3 pb-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Agent profiles</p>
+              <button
+                aria-label="Create agent profile"
+                title="Create agent profile"
+                onClick={() => setPage("agents:create")}
+                className="rounded p-1 text-blue-400 hover:bg-blue-950/60 hover:text-blue-300"
+              >
+                <Plus size={15} />
+              </button>
+            </div>
+            {agents.map((agent) => (
+              <button
+                key={agent.id}
+                onClick={() => setPage(`agents:${agent.id}`)}
+                className={`flex shrink-0 items-center gap-3 rounded-md px-3 py-2 text-sm md:mb-1 md:w-full ${page === `agents:${agent.id}` ? "bg-blue-950/70 text-blue-300" : "text-slate-400 hover:bg-blue-950/40 hover:text-slate-100"}`}
+              >
+                <Bot size={16} />
+                <span className="truncate">{agent.name}</span>
+              </button>
+            ))}
+            {!agents.length && <p className="px-3 text-xs text-slate-600">No profiles yet</p>}
+          </div>
+          <div>
+            <div className="flex items-center justify-between px-3 pb-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Projects</p>
+              <button
+                aria-label="Create project"
+                title="Create project"
+                onClick={() => setPage("projects:create")}
+                className="rounded p-1 text-blue-400 hover:bg-blue-950/60 hover:text-blue-300"
+              >
+                <Plus size={15} />
+              </button>
+            </div>
+            {projects.map((project) => (
+              <button
+                key={project.id}
+                onClick={() => setPage(`projects:${project.id}`)}
+                className={`flex shrink-0 items-center gap-3 rounded-md px-3 py-2 text-sm md:mb-1 md:w-full ${page === `projects:${project.id}` ? "bg-blue-950/70 text-blue-300" : "text-slate-400 hover:bg-blue-950/40 hover:text-slate-100"}`}
+              >
+                <FolderGit2 size={16} />
+                <span className="truncate">{project.name}</span>
+              </button>
+            ))}
+            {!projects.length && <p className="px-3 text-xs text-slate-600">No projects yet</p>}
+          </div>
+        </nav>
+        <div className="border-t border-slate-800 p-3 md:mt-auto">
+          {[{ id: "tools", label: "All Tools", icon: Cable }, { id: "settings", label: "Settings", icon: Settings }].map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               onClick={() => setPage(id)}
-               className={`flex shrink-0 items-center gap-3 rounded-md px-3 py-2 text-sm md:mb-1 md:w-full ${page === id ? "bg-blue-950/70 text-blue-300" : "text-slate-400 hover:bg-blue-950/40 hover:text-slate-100"}`}
+              className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm ${pageType === id ? "bg-blue-950/70 text-blue-300" : "text-slate-400 hover:bg-blue-950/40 hover:text-slate-100"}`}
             >
               <Icon size={17} />
               {label}
             </button>
           ))}
-        </nav>
-        <div className="hidden mt-auto border-t border-slate-800 p-4 md:block">
-          <p className="truncate text-sm">{user.displayName || user.email}</p>
-          <button
-            onClick={() => {
-              api("/api/auth/sign-out", { method: "POST" });
-               localStorage.removeItem("subpolar-token");
-               sessionStorage.removeItem("subpolar-token");
-              setUser(null);
-            }}
-            className="mt-2 flex items-center gap-2 text-xs text-slate-400 hover:text-white"
-          >
-            <LogOut size={14} />
-            Sign out
-          </button>
         </div>
       </aside>
       <main className="w-full p-5 md:p-10">

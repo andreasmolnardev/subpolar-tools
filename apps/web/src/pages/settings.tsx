@@ -4,6 +4,7 @@ import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
+import { UsersPage } from "./users";
 
 type RecordItem = Record<string, any>;
 type Request = (path: string, options?: RequestInit) => Promise<any>;
@@ -12,10 +13,12 @@ export function SettingsPage({
   request,
   user,
   onUser,
+  onSignOut,
 }: {
   request: Request;
   user: RecordItem;
   onUser(user: RecordItem): void;
+  onSignOut(): void;
 }) {
   const [sessions, setSessions] = useState<RecordItem[]>([]);
   const [message, setMessage] = useState("");
@@ -125,6 +128,7 @@ export function SettingsPage({
                 Revoke access for browsers or devices you no longer recognize.
               </p>
             </div>
+            <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
               size="sm"
@@ -135,6 +139,10 @@ export function SettingsPage({
             >
               Sign out all devices
             </Button>
+            <Button variant="outline" size="sm" onClick={onSignOut}>
+              Sign out
+            </Button>
+            </div>
           </div>
           <div className="mt-4 divide-y divide-slate-800">
             {sessions.map((session) => (
@@ -153,6 +161,9 @@ export function SettingsPage({
             {!sessions.length && <p className="py-3 text-sm text-slate-500">No sessions found.</p>}
           </div>
         </Card>
+      </div>
+      <div className="mt-10 border-t border-slate-800 pt-10">
+        <UsersPage request={request} />
       </div>
     </div>
   );

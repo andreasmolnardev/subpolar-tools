@@ -1,12 +1,12 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { FolderGit2, Play, Plus, Square } from "lucide-react";
 import { Button } from "../components/ui/button";
-import { ConfirmDialog } from "../components/ui/dialog";
+import { ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogTitle } from "../components/ui/dialog";
 
 type RecordItem = Record<string, any>;
 type Request = (path: string, options?: RequestInit) => Promise<any>;
 
-export function ProjectsPage({ request }: { request: Request }) {
+export function ProjectsPage({ request, initialId }: { request: Request; initialId?: string }) {
   const [projects, setProjects] = useState<RecordItem[]>([]);
   const [selected, setSelected] = useState<RecordItem | null>(null);
   const [roles, setRoles] = useState<RecordItem[]>([]);
@@ -55,6 +55,10 @@ export function ProjectsPage({ request }: { request: Request }) {
   useEffect(() => {
     void load();
   }, []);
+  useEffect(() => {
+    const project = projects.find((item) => item.id === initialId);
+    if (project && selected?.id !== project.id) void select(project);
+  }, [projects, initialId]);
   const submitProject = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -276,6 +280,7 @@ export function ProjectsPage({ request }: { request: Request }) {
     });
     setWorkspaceSecret(result.secret);
   };
+  const focused = Boolean(initialId && initialId !== "create");
   return (
     <div>
       <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
@@ -290,8 +295,13 @@ export function ProjectsPage({ request }: { request: Request }) {
           Create project
         </Button>
       </div>
-      {showProject && (
-        <form className="mb-6 grid gap-3 rounded-xl border bg-slate-950/70 p-5 md:grid-cols-2" onSubmit={submitProject}>
+      <Dialog open={showProject} onOpenChange={setShowProject}>
+        <DialogContent className="max-w-4xl">
+          <DialogTitle>New project</DialogTitle>
+          <DialogDescription className="mt-1 text-sm text-slate-400">
+            Configure a repository-backed project and its isolated sandbox defaults.
+          </DialogDescription>
+        <form className="mt-5 grid gap-3 md:grid-cols-2" onSubmit={submitProject}>
           <input required name="name" placeholder="Project name" />
           <input name="description" placeholder="Description" />
           <select name="gitProvider">
@@ -356,9 +366,10 @@ export function ProjectsPage({ request }: { request: Request }) {
           </p>
           <Button className="md:col-span-2">Create project</Button>
         </form>
-      )}
-      <div className="grid gap-5 lg:grid-cols-[19rem_1fr]">
-        <aside className="space-y-2">
+        </DialogContent>
+      </Dialog>
+      <div className={`grid gap-5 ${focused ? "lg:grid-cols-1" : "lg:grid-cols-[19rem_1fr]"}`}>
+        {!focused && <aside className="space-y-2">
           {projects.map((project) => (
             <button
               key={project.id}
@@ -369,7 +380,7 @@ export function ProjectsPage({ request }: { request: Request }) {
               <p className="mt-1 truncate text-sm text-slate-500">{project.repository || "Local-only"}</p>
             </button>
           ))}
-        </aside>
+        </aside>}
           <section className="rounded-xl border bg-slate-950/70 p-5">
           {selected ? (
             <>
