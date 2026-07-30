@@ -14,6 +14,7 @@ export function ProjectsPage({ request }: { request: Request }) {
   const [showRole, setShowRole] = useState(false);
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [showGit, setShowGit] = useState(false);
+  const [inspection, setInspection] = useState<RecordItem | null>(null);
   const [error, setError] = useState("");
   const load = () => request("/api/projects").then(setProjects);
   const select = async (project: RecordItem) => {
@@ -96,6 +97,14 @@ export function ProjectsPage({ request }: { request: Request }) {
   const lifecycle = async (workspace: RecordItem, action: "start" | "stop") => {
     await request(`/api/workspaces/${workspace.id}/${action}`, { method: "POST" });
     if (selected) await select(selected);
+  };
+  const inspect = async (workspace: RecordItem) =>
+    setInspection(await request(`/api/workspaces/${workspace.id}/inspect`));
+  const release = async (workspace: RecordItem) => {
+    if (!selected || !confirm(`Release workspace ${workspace.label}? This deletes its sandbox and worktree.`)) return;
+    await request(`/api/workspaces/${workspace.id}`, { method: "DELETE" });
+    await select(selected);
+    await load();
   };
   return (
     <div>
@@ -230,29 +239,49 @@ export function ProjectsPage({ request }: { request: Request }) {
                             {workspace.branch} · {workspace.handle}
                           </p>
                         </div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() =>
-                            void lifecycle(workspace, workspace.sandboxState === "Running" ? "stop" : "start")
-                          }
-                        >
-                          {workspace.sandboxState === "Running" ? (
-                            <>
-                              <Square size={13} className="mr-1" />
-                              Stop
-                            </>
-                          ) : (
-                            <>
-                              <Play size={13} className="mr-1" />
-                              Start
-                            </>
-                          )}
-                        </Button>
+                        <div className="flex flex-wrap gap-1">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void navigator.clipboard.writeText(workspace.handle)}
+                          >
+                            Copy handle
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => void inspect(workspace)}>
+                            Inspect
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() =>
+                              void lifecycle(workspace, workspace.sandboxState === "Running" ? "stop" : "start")
+                            }
+                          >
+                            {workspace.sandboxState === "Running" ? (
+                              <>
+                                <Square size={13} className="mr-1" />
+                                Stop
+                              </>
+                            ) : (
+                              <>
+                                <Play size={13} className="mr-1" />
+                                Start
+                              </>
+                            )}
+                          </Button>
+                          <Button variant="destructive" size="sm" onClick={() => void release(workspace)}>
+                            Release
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   ))}
                   {!workspaces.length && <p className="text-sm text-slate-500">No active workspaces.</p>}
+                  {inspection && (
+                    <pre className="mt-3 max-h-64 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-300">
+                      {JSON.stringify(inspection, null, 2)}
+                    </pre>
+                  )}
                 </div>
               </div>
             </>

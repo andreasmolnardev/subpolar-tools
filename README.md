@@ -10,6 +10,8 @@ Subpolar Tools is a Bun, Hono, TypeScript, React, shadcn-style administration pl
 
 The main container starts PocketBase on the loopback interface and the Hono application on port 3000. PocketBase data is persisted in the `subpolar-data` volume.
 
+`SUBPOLAR_LOG_EMAIL_TOKENS=true` starts PocketBase in development mail mode, which prints password-reset and email-verification links/tokens to `docker compose logs`. Set it to `false` in production and configure SMTP in PocketBase instead.
+
 For local UI/API development, run `bun install` followed by `bun run dev`. A separately running PocketBase instance must be available at `PB_URL`.
 
 Run `bun test` for the test suite. With a running deployment, execute the session integration test with `SUBPOLAR_TEST_URL`, `SUBPOLAR_TEST_EMAIL`, and `SUBPOLAR_TEST_PASSWORD` set, then run `bun run test:integration`.
