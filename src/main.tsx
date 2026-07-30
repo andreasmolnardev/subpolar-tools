@@ -91,7 +91,11 @@ function Login({ onLogin }: { onLogin(user: Item): void }) {
       }
       const result = await api("/api/auth/sign-in", {
         method: "POST",
-        body: JSON.stringify({ email: form.get("email"), password: form.get("password") }),
+        body: JSON.stringify({
+          email: form.get("email"),
+          password: form.get("password"),
+          persistent: form.get("persistent") === "on",
+        }),
       });
       localStorage.setItem("subpolar-token", result.token);
       onLogin(result.user);
@@ -139,6 +143,11 @@ function Login({ onLogin }: { onLogin(user: Item): void }) {
               <label className={mode === "reset" ? "block" : "mt-4 block"}>
                 {mode === "reset" ? "New password" : "Password"}
                 <input required name="password" type="password" minLength={12} />
+              </label>
+            )}
+            {mode === "sign-in" && (
+              <label className="mt-4 flex items-center gap-2 text-sm">
+                <input name="persistent" type="checkbox" className="h-4 w-4" /> Keep me signed in
               </label>
             )}
           </>

@@ -10,10 +10,22 @@ export function UsersPage({ request }: { request: Request }) {
   const [events, setEvents] = useState<RecordItem[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [error, setError] = useState("");
+  const [selected, setSelected] = useState<RecordItem | null>(null);
+  const [sessions, setSessions] = useState<RecordItem[]>([]);
+  const [agents, setAgents] = useState<RecordItem[]>([]);
+  const [projects, setProjects] = useState<RecordItem[]>([]);
+  const [grants, setGrants] = useState<{ agentIds: string[]; projectIds: string[] }>({ agentIds: [], projectIds: [] });
   const load = async () => {
-    const [nextUsers, nextEvents] = await Promise.all([request("/api/users"), request("/api/audit-events")]);
+    const [nextUsers, nextEvents, nextAgents, nextProjects] = await Promise.all([
+      request("/api/users"),
+      request("/api/audit-events"),
+      request("/api/agents"),
+      request("/api/projects"),
+    ]);
     setUsers(nextUsers);
     setEvents(nextEvents);
+    setAgents(nextAgents);
+    setProjects(nextProjects);
   };
   useEffect(() => {
     void load();
@@ -41,6 +53,20 @@ export function UsersPage({ request }: { request: Request }) {
     await request(`/api/users/${user.id}`, { method: "PATCH", body: JSON.stringify(data) });
     await load();
   };
+  const showSessions = async (user: RecordItem) => {
+    setSelected(user);
+    const [nextSessions, nextGrants] = await Promise.all([
+      request(`/api/users/${user.id}/sessions`),
+      request(`/api/users/${user.id}/grants`),
+    ]);
+    setSessions(nextSessions);
+    setGrants(nextGrants);
+  };
+  const toggleGrant = (type: "agentIds" | "projectIds", id: string) =>
+    setGrants((current) => ({
+      ...current,
+      [type]: current[type].includes(id) ? current[type].filter((item) => item !== id) : [...current[type], id],
+    }));
   return (
     <div>
       <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
@@ -103,6 +129,9 @@ export function UsersPage({ request }: { request: Request }) {
                   >
                     Revoke sessions
                   </Button>
+                  <Button variant="outline" size="sm" onClick={() => void showSessions(user)}>
+                    Sessions
+                  </Button>
                 </div>
               </div>
             ))}
@@ -124,6 +153,61 @@ export function UsersPage({ request }: { request: Request }) {
           </div>
         </section>
       </div>
+      {selected && (
+        <section className="mt-5 rounded-xl border bg-slate-900/60 p-5">
+          <h2 className="font-medium">Sessions and access for {selected.displayName || selected.email}</h2>
+          <div className="mt-3 space-y-2">
+            {sessions.map((session) => (
+              <div key={session.id} className="flex justify-between rounded border p-3 text-sm">
+                <span>
+                  {session.label || "Browser"}
+                  <br />
+                  <small className="text-slate-500">
+                    Last used {session.lastUsed || "Never"} · expires {session.expiresAt}
+                  </small>
+                </span>
+                <span>{session.revoked ? "Revoked" : "Active"}</span>
+              </div>
+            ))}
+          </div>
+          <div className="mt-5 grid gap-4 md:grid-cols-2">
+            <fieldset>
+              <legend className="text-sm font-medium">Agent profiles</legend>
+              {agents.map((agent) => (
+                <label className="mt-2 flex gap-2 text-sm" key={agent.id}>
+                  <input
+                    type="checkbox"
+                    checked={grants.agentIds.includes(agent.id)}
+                    onChange={() => toggleGrant("agentIds", agent.id)}
+                  />
+                  {agent.name}
+                </label>
+              ))}
+            </fieldset>
+            <fieldset>
+              <legend className="text-sm font-medium">Projects</legend>
+              {projects.map((project) => (
+                <label className="mt-2 flex gap-2 text-sm" key={project.id}>
+                  <input
+                    type="checkbox"
+                    checked={grants.projectIds.includes(project.id)}
+                    onChange={() => toggleGrant("projectIds", project.id)}
+                  />
+                  {project.name}
+                </label>
+              ))}
+            </fieldset>
+          </div>
+          <Button
+            className="mt-5"
+            onClick={() =>
+              void request(`/api/users/${selected.id}/grants`, { method: "PUT", body: JSON.stringify(grants) })
+            }
+          >
+            Save access grants
+          </Button>
+        </section>
+      )}
     </div>
   );
 }

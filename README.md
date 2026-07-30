@@ -10,7 +10,7 @@ Subpolar Tools is a Bun, Hono, TypeScript, React, shadcn-style administration pl
 
 The main container starts PocketBase on the loopback interface and the Hono application on port 3000. PocketBase data is persisted in the `subpolar-data` volume.
 
-`SUBPOLAR_LOG_EMAIL_TOKENS=true` starts PocketBase in development mail mode, which prints password-reset and email-verification links/tokens to `docker compose logs`. Set it to `false` in production and configure SMTP in PocketBase instead.
+`SUBPOLAR_LOG_EMAIL_TOKENS=true` starts PocketBase in development mail mode, which prints password-reset and email-verification links/tokens to `docker compose logs`. It defaults to `false`; configure SMTP in PocketBase for production.
 
 For local UI/API development, run `bun install` followed by `bun run dev`. A separately running PocketBase instance must be available at `PB_URL`.
 
@@ -22,7 +22,7 @@ Run `bun test` for the test suite. With a running deployment, execute the sessio
 - PocketBase is the bundled persistent identity and configuration store.
 - `/api/v1/resolve/:tool` is a separate stateless, bearer-token-only harness endpoint. It never accepts an administrator session.
 - Provider credentials are centrally stored encrypted at rest using `SUBPOLAR_SECRET_KEY`; agent credentials are hash-only and shown once at creation.
-- Workspace creation creates a unique opaque handle, clones the configured repository, and starts a Docker sandbox with only that worktree mounted. Sandbox children never receive the Docker socket.
+- Administrative workspace creation creates a unique opaque handle and worktree in the `Stopped` state. A role credential with `workspace.create` starts a sandbox when it creates a worktree; administrators may start any stopped sandbox manually. Sandbox children never receive the Docker socket.
 
 ## Harness APIs
 

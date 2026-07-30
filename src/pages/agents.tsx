@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Bot, KeyRound, Play, Plus, Power, Trash2, Wrench } from "lucide-react";
 import { Button } from "../components/ui/button";
+import { ConfirmDialog } from "../components/ui/dialog";
 
 type RecordItem = Record<string, any>;
 type Request = (path: string, options?: RequestInit) => Promise<any>;
@@ -15,7 +16,12 @@ export function AgentsPage({ request }: { request: Request }) {
   const [secret, setSecret] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [showTool, setShowTool] = useState(false);
+  const [editingTool, setEditingTool] = useState<RecordItem | null>(null);
+  const [editingAgent, setEditingAgent] = useState(false);
   const [testOutput, setTestOutput] = useState("");
+  const [validation, setValidation] = useState<Record<string, RecordItem>>({});
+  const [confirming, setConfirming] = useState<{ title: string; action: () => Promise<void> } | null>(null);
+  const [testing, setTesting] = useState<RecordItem | null>(null);
 
   const load = async () => {
     const [nextAgents, nextProviders] = await Promise.all([request("/api/agents"), request("/api/providers")]);
@@ -52,8 +58,8 @@ export function AgentsPage({ request }: { request: Request }) {
     event.preventDefault();
     if (!selected) return;
     const form = new FormData(event.currentTarget);
-    await request(`/api/agents/${selected.id}/tools`, {
-      method: "POST",
+    await request(`/api/agents/${selected.id}/tools${editingTool ? `/${editingTool.id}` : ""}`, {
+      method: editingTool ? "PATCH" : "POST",
       body: JSON.stringify({
         providerId: form.get("providerId"),
         operation: form.get("operation"),
@@ -66,8 +72,21 @@ export function AgentsPage({ request }: { request: Request }) {
       }),
     });
     setShowTool(false);
+    setEditingTool(null);
     await select(selected);
     await load();
+  };
+  const saveAgent = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selected) return;
+    const form = new FormData(event.currentTarget);
+    const updated = await request(`/api/agents/${selected.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name: form.get("name"), description: form.get("description") }),
+    });
+    setEditingAgent(false);
+    await load();
+    await select(updated);
   };
   const createCredential = async () => {
     if (!selected) return;
@@ -79,13 +98,14 @@ export function AgentsPage({ request }: { request: Request }) {
     await select(selected);
   };
   const revokeCredential = async (credential: RecordItem) => {
-    if (
-      !selected ||
-      !confirm(`Revoke ${credential.name}? Existing MCP and OpenAPI clients using this token will lose access.`)
-    )
-      return;
-    await request(`/api/agent-credentials/${credential.id}/revoke`, { method: "POST" });
-    await select(selected);
+    if (!selected) return;
+    setConfirming({
+      title: `Revoke ${credential.name}?`,
+      action: async () => {
+        await request(`/api/agent-credentials/${credential.id}/revoke`, { method: "POST" });
+        await select(selected);
+      },
+    });
   };
   const toggle = async () => {
     if (!selected) return;
@@ -97,17 +117,30 @@ export function AgentsPage({ request }: { request: Request }) {
     setSelected(updated);
   };
   const removeTool = async (tool: RecordItem) => {
-    if (!selected || !confirm(`Remove ${tool.exposedName}?`)) return;
-    await request(`/api/agents/${selected.id}/tools/${tool.id}`, { method: "DELETE" });
-    await select(selected);
+    if (!selected) return;
+    setConfirming({
+      title: `Remove ${tool.exposedName}?`,
+      action: async () => {
+        await request(`/api/agents/${selected.id}/tools/${tool.id}`, { method: "DELETE" });
+        await select(selected);
+      },
+    });
   };
   const testTool = async (tool: RecordItem) => {
     if (!selected) return;
-    const raw = prompt(`JSON input for ${tool.exposedName}`, "{}");
-    if (raw === null) return;
-    const result = await request(`/api/agents/${selected.id}/tools/${tool.id}/test`, { method: "POST", body: raw });
-    setTestOutput(JSON.stringify(result, null, 2));
+    setTesting(tool);
   };
+  const removeAgent = () =>
+    selected &&
+    setConfirming({
+      title: `Delete ${selected.name}?`,
+      action: async () => {
+        await request(`/api/agents/${selected.id}`, { method: "DELETE" });
+        setSelected(null);
+        setTools([]);
+        await load();
+      },
+    });
 
   return (
     <div>
@@ -174,7 +207,17 @@ export function AgentsPage({ request }: { request: Request }) {
                     <Power size={14} className="mr-2" />
                     {selected.enabled ? "Disable" : "Enable"}
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => setShowTool(!showTool)}>
+                  <Button variant="outline" size="sm" onClick={() => setEditingAgent(!editingAgent)}>
+                    Edit
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setEditingTool(null);
+                      setShowTool(!showTool);
+                    }}
+                  >
                     <Wrench size={14} className="mr-2" />
                     Expose tool
                   </Button>
@@ -182,11 +225,21 @@ export function AgentsPage({ request }: { request: Request }) {
                     <KeyRound size={14} className="mr-2" />
                     Credential
                   </Button>
+                  <Button variant="destructive" size="sm" onClick={removeAgent}>
+                    Delete
+                  </Button>
                 </div>
               </div>
+              {editingAgent && (
+                <form className="mt-5 grid gap-3 border-t pt-5 md:grid-cols-2" onSubmit={saveAgent}>
+                  <input required name="name" defaultValue={selected.name} />
+                  <input name="description" defaultValue={selected.description} />
+                  <Button className="md:col-span-2">Save profile</Button>
+                </form>
+              )}
               {showTool && (
                 <form className="mt-5 grid gap-3 border-t pt-5 md:grid-cols-2" onSubmit={addTool}>
-                  <select required name="providerId">
+                  <select required name="providerId" defaultValue={editingTool?.providerId ?? ""}>
                     <option value="">Provider</option>
                     {providers
                       .filter((provider) => !provider.disabled)
@@ -196,14 +249,44 @@ export function AgentsPage({ request }: { request: Request }) {
                         </option>
                       ))}
                   </select>
-                  <input required name="operation" placeholder="Underlying operation, e.g. query" />
-                  <input required name="exposedName" placeholder="Exposed name, e.g. web.search" />
-                  <input name="description" placeholder="Model-visible description" />
-                  <textarea name="inputSchema" defaultValue="{}" placeholder="Exposed JSON schema" />
-                  <textarea name="inputMap" defaultValue="{}" placeholder='Input map, e.g. {"query":"q"}' />
-                  <textarea name="fixedArgs" defaultValue="{}" placeholder="Fixed hidden arguments" />
-                  <textarea name="outputMap" defaultValue="{}" placeholder="Output map" />
-                  <Button className="md:col-span-2">Save adapter</Button>
+                  <input
+                    required
+                    name="operation"
+                    defaultValue={editingTool?.operation}
+                    placeholder="Underlying operation, e.g. query"
+                  />
+                  <input
+                    required
+                    name="exposedName"
+                    defaultValue={editingTool?.exposedName}
+                    placeholder="Exposed name, e.g. web.search"
+                  />
+                  <input
+                    name="description"
+                    defaultValue={editingTool?.description}
+                    placeholder="Model-visible description"
+                  />
+                  <textarea
+                    name="inputSchema"
+                    defaultValue={JSON.stringify(editingTool?.inputSchema ?? {}, null, 2)}
+                    placeholder="Exposed JSON schema"
+                  />
+                  <textarea
+                    name="inputMap"
+                    defaultValue={JSON.stringify(editingTool?.inputMap ?? {}, null, 2)}
+                    placeholder='Input map, e.g. {"query":"q"}'
+                  />
+                  <textarea
+                    name="fixedArgs"
+                    defaultValue={JSON.stringify(editingTool?.fixedArgs ?? {}, null, 2)}
+                    placeholder="Fixed hidden arguments"
+                  />
+                  <textarea
+                    name="outputMap"
+                    defaultValue={JSON.stringify(editingTool?.outputMap ?? {}, null, 2)}
+                    placeholder="Output map"
+                  />
+                  <Button className="md:col-span-2">{editingTool ? "Update adapter" : "Save adapter"}</Button>
                 </form>
               )}
               <div className="mt-6 grid gap-5 xl:grid-cols-2">
@@ -219,6 +302,28 @@ export function AgentsPage({ request }: { request: Request }) {
                               <Button variant="ghost" size="sm" onClick={() => void testTool(tool)}>
                                 <Play size={13} />
                               </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() =>
+                                  selected &&
+                                  void request(`/api/agents/${selected.id}/tools/${tool.id}/validate`, {
+                                    method: "POST",
+                                  }).then((result) => setValidation((current) => ({ ...current, [tool.id]: result })))
+                                }
+                              >
+                                Validate
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  setEditingTool(tool);
+                                  setShowTool(true);
+                                }}
+                              >
+                                Edit
+                              </Button>
                               <Button variant="ghost" size="sm" onClick={() => void removeTool(tool)}>
                                 <Trash2 size={13} />
                               </Button>
@@ -227,6 +332,15 @@ export function AgentsPage({ request }: { request: Request }) {
                           <p className="mt-1 text-xs text-slate-500">
                             {tool.operation} · {tool.description || "No description"}
                           </p>
+                          {validation[tool.id] && (
+                            <p
+                              className={`mt-2 text-xs ${validation[tool.id].valid ? "text-emerald-400" : "text-rose-400"}`}
+                            >
+                              {validation[tool.id].valid
+                                ? "Schema mapping valid"
+                                : validation[tool.id].errors?.join(", ")}
+                            </p>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -236,6 +350,11 @@ export function AgentsPage({ request }: { request: Request }) {
                 </div>
                 <div>
                   <h3 className="mb-3 text-sm font-medium text-slate-300">Final contract preview</h3>
+                  <p className="mb-2 break-all text-xs text-slate-500">
+                    MCP: {location.origin}/api/v1/mcp
+                    <br />
+                    OpenAPI: {location.origin}/api/v1/agents/{selected.id}/openapi.json
+                  </p>
                   <pre className="max-h-80 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-300">
                     {JSON.stringify(contract, null, 2)}
                   </pre>
@@ -282,6 +401,43 @@ export function AgentsPage({ request }: { request: Request }) {
           )}
         </section>
       </div>
+      {testing && (
+        <form
+          className="fixed inset-0 z-40 grid place-items-center bg-slate-950/80 p-4"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            const raw = String(new FormData(event.currentTarget).get("input") || "{}");
+            const result = await request(`/api/agents/${selected!.id}/tools/${testing.id}/test`, {
+              method: "POST",
+              body: raw,
+            });
+            setTestOutput(JSON.stringify(result, null, 2));
+            setTesting(null);
+          }}
+        >
+          <div className="w-full max-w-lg rounded-xl border bg-slate-900 p-5">
+            <h2 className="font-semibold">Test {testing.exposedName}</h2>
+            <textarea className="mt-3 w-full" name="input" defaultValue="{}" />
+            <div className="mt-3 flex gap-2">
+              <Button>Run test</Button>
+              <Button type="button" variant="outline" onClick={() => setTesting(null)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </form>
+      )}
+      <ConfirmDialog
+        open={Boolean(confirming)}
+        onOpenChange={(open) => !open && setConfirming(null)}
+        title={confirming?.title ?? "Confirm action"}
+        description="This action cannot be undone."
+        onConfirm={() => {
+          const action = confirming?.action;
+          setConfirming(null);
+          if (action) void action();
+        }}
+      />
     </div>
   );
 }

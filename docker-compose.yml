@@ -7,7 +7,7 @@ services:
       SUBPOLAR_ADMIN_EMAIL: ${SUBPOLAR_ADMIN_EMAIL:?set in .env}
       SUBPOLAR_ADMIN_PASSWORD: ${SUBPOLAR_ADMIN_PASSWORD:?set in .env}
       SUBPOLAR_SECRET_KEY: ${SUBPOLAR_SECRET_KEY:?set in .env}
-      SUBPOLAR_LOG_EMAIL_TOKENS: ${SUBPOLAR_LOG_EMAIL_TOKENS:-true}
+      SUBPOLAR_LOG_EMAIL_TOKENS: ${SUBPOLAR_LOG_EMAIL_TOKENS:-false}
       SUBPOLAR_ORIGIN: ${SUBPOLAR_ORIGIN:-http://localhost:3000}
     volumes:
       - subpolar-data:/app/pb_data

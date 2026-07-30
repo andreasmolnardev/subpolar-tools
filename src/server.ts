@@ -152,6 +152,7 @@ async function setup() {
     text("sandboxId"),
     text("sandboxState"),
     text("gitStatus"),
+    text("lastActivity"),
   ]);
   await ensureCollection("audit_events", "base", [
     text("actorId"),
@@ -159,6 +160,8 @@ async function setup() {
     text("resource"),
     jsonField("details"),
   ]);
+  await ensureCollection("user_agent_grants", "base", [text("userId", true), text("agentId", true)]);
+  await ensureCollection("user_project_grants", "base", [text("userId", true), text("projectId", true)]);
   try {
     await pb.collection("platform_users").getFirstListItem(`email="${adminEmail}"`);
   } catch {
@@ -200,6 +203,16 @@ const requireUser = async (c: Context, admin = false) => {
   if (admin && user.platformRole !== "Admin") return null;
   return user;
 };
+async function hasGrant(
+  user: RecordData,
+  collection: "user_agent_grants" | "user_project_grants",
+  field: "agentId" | "projectId",
+  id: string,
+) {
+  return (
+    user.platformRole === "Admin" || Boolean((await list(collection, `userId="${user.id}" && ${field}="${id}"`))[0])
+  );
+}
 const list = async (collection: string, filter = "") =>
   json(
     await pb.collection(collection).getFullList({ filter: filter.replace(/([A-Za-z0-9_])=/g, "$1 = ") }),
@@ -231,14 +244,24 @@ async function providerHeaders(provider: RecordData) {
   return headers;
 }
 async function mcpStdio(provider: RecordData, requests: Array<{ method: string; params: object }>) {
-  const command = configOf(provider).command;
+  const configuration = configOf(provider);
+  const command = configuration.command;
   if (!Array.isArray(command) || !command.length || !command.every((part) => typeof part === "string"))
     throw new Error("MCP command transport requires configuration.command as a non-empty command array");
-  const process = Bun.spawn({ cmd: command as string[], stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const environment = configuration.environment;
+  if (environment !== undefined && (typeof environment !== "object" || Array.isArray(environment)))
+    throw new Error("MCP command environment must be an object");
+  const process = Bun.spawn({
+    cmd: command as string[],
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...Bun.env, ...((environment ?? {}) as Record<string, string>) },
+  });
   for (const [index, request] of requests.entries())
     process.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: index + 1, ...request })}\n`);
   process.stdin.end();
-  const timeout = Number(configOf(provider).timeout ?? 10000);
+  const timeout = Number(configuration.timeout ?? 10000);
   const completed = await Promise.race([
     Promise.all([new Response(process.stdout).text(), new Response(process.stderr).text(), process.exited]),
     new Promise<never>((_, reject) =>
@@ -284,12 +307,15 @@ async function discover(provider: RecordData) {
   const headers = await providerHeaders(provider);
   let current: Record<string, unknown>;
   if (provider.kind === "OpenAPI") {
-    const response = await fetch(String(configuration.schemaUrl ?? provider.endpoint), {
-      headers,
-      signal: AbortSignal.timeout(Number(configuration.timeout ?? 10000)),
-    });
-    if (!response.ok) throw new Error(`Schema request failed with ${response.status}`);
-    const document = (await response.json()) as Record<string, any>;
+    const inline = configuration.schema;
+    const response = inline
+      ? null
+      : await fetch(String(configuration.schemaUrl ?? provider.endpoint), {
+          headers,
+          signal: AbortSignal.timeout(Number(configuration.timeout ?? 10000)),
+        });
+    if (response && !response.ok) throw new Error(`Schema request failed with ${response.status}`);
+    const document = (inline ?? (await response!.json())) as Record<string, any>;
     current = { format: "openapi", document, operations: openApiOperations(document) };
   } else {
     if (configuration.transport === "command") {
@@ -418,6 +444,47 @@ function commandOutput(command: string[], timeout = 60000) {
   if (process.exitCode !== 0) throw new Error(process.stderr.toString() || `Command failed with ${process.exitCode}`);
   return process.stdout.toString();
 }
+function sandboxArgs(worktreePath: string, handle: string, policy: Record<string, unknown>) {
+  const environment = (policy.environment ?? {}) as Record<string, unknown>;
+  const caches = (policy.caches ?? {}) as Record<string, unknown>;
+  const secrets = (policy.secrets ?? {}) as Record<string, unknown>;
+  const args = [
+    "run",
+    "-d",
+    "--rm",
+    "--name",
+    `subpolar-${handle}`,
+    "--cpus",
+    String(policy.cpu ?? "1"),
+    "--memory",
+    String(policy.memory ?? "1g"),
+    "--pids-limit",
+    String(policy.pids ?? 256),
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--tmpfs",
+    "/tmp:rw,nosuid,nodev,noexec,size=64m",
+    "--tmpfs",
+    "/home/subpolar:rw,nosuid,nodev,size=64m",
+    "-e",
+    "HOME=/home/subpolar",
+    "-v",
+    `${worktreePath}:/workspace`,
+    "-w",
+    "/workspace",
+    "--network",
+    policy.network ? "bridge" : "none",
+  ];
+  for (const [name, value] of Object.entries(environment)) args.push("-e", `${name}=${String(value)}`);
+  for (const [name, path] of Object.entries(caches)) args.push("-v", `subpolar-cache-${name}:${String(path)}`);
+  for (const [name, path] of Object.entries(secrets)) args.push("-v", `${String(path)}:/run/secrets/${name}:ro`);
+  return args;
+}
+function workspaceTimeout(policy: Record<string, unknown>) {
+  return Math.max(1, Math.min(Number(policy.timeout ?? 600), 3600)) * 1000;
+}
 async function workspaceForCredential(c: Context) {
   const raw = c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") ?? "";
   const credential = (await list("workspace_credentials", `tokenHash="${await sha256(raw)}"`))[0];
@@ -438,7 +505,9 @@ app.get("/api/health", (c) => c.json({ ok: true }));
 
 app.post("/api/auth/sign-in", async (c) => {
   if (rateLimited(c, "sign-in", 10)) return c.json({ error: "Too many attempts; try again shortly" }, 429);
-  const input = z.object({ email: z.string().email(), password: z.string().min(1) }).parse(await c.req.json());
+  const input = z
+    .object({ email: z.string().email(), password: z.string().min(1), persistent: z.boolean().default(false) })
+    .parse(await c.req.json());
   try {
     const auth = await new PocketBase(pbUrl).collection("platform_users").authWithPassword(input.email, input.password);
     if (auth.record.enabled === false) return c.json({ error: "Invalid email or password" }, 401);
@@ -448,7 +517,10 @@ app.post("/api/auth/sign-in", async (c) => {
       tokenHash: await sha256(sessionToken),
       label: c.req.header("user-agent")?.slice(0, 120) ?? "Browser",
       lastUsed: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      expiresAt: new Date(
+        Date.now() +
+          (input.persistent ? Number(process.env.SUBPOLAR_PERSISTENT_SESSION_DAYS ?? 30) : 1) * 24 * 60 * 60 * 1000,
+      ).toISOString(),
       revoked: false,
     });
     await audit(auth.record.id, "sign_in", "session");
@@ -583,6 +655,55 @@ app.patch("/api/users/:id", async (c) => {
   await audit(admin.id, "update_user", user.id, input);
   return c.json(json(user));
 });
+app.post("/api/users/:id/reset-password", async (c) => {
+  const admin = await requireUser(c, true);
+  if (!admin) return c.json({ error: "Forbidden" }, 403);
+  const input = z.object({ password: z.string().min(12) }).parse(await c.req.json());
+  await pb
+    .collection("platform_users")
+    .update(c.req.param("id"), { password: input.password, passwordConfirm: input.password });
+  const sessions = await list("sessions", `userId="${c.req.param("id")}"`);
+  await Promise.all(sessions.map((session) => pb.collection("sessions").update(session.id, { revoked: true })));
+  await audit(admin.id, "admin_reset_password", c.req.param("id"));
+  return c.json({ ok: true });
+});
+app.put("/api/users/:id/grants", async (c) => {
+  const admin = await requireUser(c, true);
+  if (!admin) return c.json({ error: "Forbidden" }, 403);
+  const input = z
+    .object({ agentIds: z.array(z.string()).default([]), projectIds: z.array(z.string()).default([]) })
+    .parse(await c.req.json());
+  const userId = c.req.param("id");
+  const [agentGrants, projectGrants] = await Promise.all([
+    list("user_agent_grants", `userId="${userId}"`),
+    list("user_project_grants", `userId="${userId}"`),
+  ]);
+  await Promise.all([
+    ...agentGrants.map((grant) => pb.collection("user_agent_grants").delete(grant.id)),
+    ...projectGrants.map((grant) => pb.collection("user_project_grants").delete(grant.id)),
+  ]);
+  await Promise.all([
+    ...input.agentIds.map((agentId) => pb.collection("user_agent_grants").create({ userId, agentId })),
+    ...input.projectIds.map((projectId) => pb.collection("user_project_grants").create({ userId, projectId })),
+  ]);
+  await audit(admin.id, "update_user_grants", userId, {
+    agents: input.agentIds.length,
+    projects: input.projectIds.length,
+  });
+  return c.json(input);
+});
+app.get("/api/users/:id/grants", async (c) => {
+  if (!(await requireUser(c, true))) return c.json({ error: "Forbidden" }, 403);
+  const userId = c.req.param("id");
+  const [agents, projects] = await Promise.all([
+    list("user_agent_grants", `userId="${userId}"`),
+    list("user_project_grants", `userId="${userId}"`),
+  ]);
+  return c.json({
+    agentIds: agents.map((grant) => grant.agentId),
+    projectIds: projects.map((grant) => grant.projectId),
+  });
+});
 app.get("/api/users/:id/sessions", async (c) => {
   if (!(await requireUser(c, true))) return c.json({ error: "Forbidden" }, 403);
   const sessions = await list("sessions", `userId="${c.req.param("id")}"`);
@@ -598,7 +719,14 @@ app.post("/api/users/:id/revoke-sessions", async (c) => {
 });
 app.get("/api/audit-events", async (c) => {
   if (!(await requireUser(c, true))) return c.json({ error: "Forbidden" }, 403);
-  return c.json((await list("audit_events")).slice(0, 100));
+  const action = c.req.query("action");
+  const actorId = c.req.query("actorId");
+  const events = await list("audit_events");
+  return c.json(
+    events
+      .filter((event) => (!action || event.action === action) && (!actorId || event.actorId === actorId))
+      .slice(0, 100),
+  );
 });
 
 app.get("/api/providers", async (c) => {
@@ -630,9 +758,16 @@ app.post("/api/providers", async (c) => {
     });
     credentialId = credential.id;
   }
-  const provider = await pb
+  let provider = await pb
     .collection("providers")
     .create({ ...input, credentialId, status: "Unknown", disabled: false, lastConnected: "" });
+  if (input.kind === "MCP" && input.configuration.startup === "eager") {
+    try {
+      provider = await discover(json(provider) as unknown as RecordData);
+    } catch {
+      provider = await pb.collection("providers").update(provider.id, { status: "Unavailable" });
+    }
+  }
   await audit(user.id, "create_provider", provider.id);
   return c.json(json(provider), 201);
 });
@@ -668,11 +803,47 @@ app.patch("/api/providers/:id", async (c) => {
       disabled: z.boolean().optional(),
       name: z.string().min(1).optional(),
       schema: z.record(z.unknown()).optional(),
+      endpoint: z.string().min(1).optional(),
+      configuration: z.record(z.unknown()).optional(),
+      credentialName: z.string().min(1).optional(),
+      credentialSecret: z.string().min(1).optional(),
     })
     .parse(await c.req.json());
-  const updated = await pb.collection("providers").update(c.req.param("id"), input);
-  await audit(user.id, "update_provider", updated.id, input);
+  const provider = await one("providers", c.req.param("id"));
+  let credentialId = String(provider.credentialId || "");
+  if (input.credentialSecret) {
+    const credential = await pb.collection("credentials").create({
+      name: input.credentialName ?? `${provider.name} credential`,
+      kind: provider.kind,
+      ciphertext: await encryptSecret(input.credentialSecret),
+      ownerType: "provider",
+      ownerId: provider.id,
+    });
+    if (credentialId) await pb.collection("credentials").delete(credentialId);
+    credentialId = credential.id;
+  }
+  const { credentialName, credentialSecret, ...changes } = input;
+  const updated = await pb.collection("providers").update(c.req.param("id"), { ...changes, credentialId });
+  await audit(user.id, "update_provider", updated.id, { ...changes, credentialRotated: Boolean(credentialSecret) });
   return c.json(json(updated));
+});
+app.get("/api/providers/:id/usage", async (c) => {
+  if (!(await requireUser(c))) return c.json({ error: "Unauthorized" }, 401);
+  const providerId = c.req.param("id");
+  const [tools, agents, roles] = await Promise.all([
+    list("agent_tools", `providerId="${providerId}"`),
+    list("agents"),
+    list("roles"),
+  ]);
+  return c.json({
+    agents: tools.map((tool) => ({
+      tool: tool.exposedName,
+      agent: agents.find((agent) => agent.id === tool.agentId)?.name ?? tool.agentId,
+    })),
+    roles: roles
+      .filter((role) => (role.toolIds as string[]).includes(providerId))
+      .map((role) => ({ id: role.id, name: role.name })),
+  });
 });
 app.delete("/api/providers/:id", async (c) => {
   const user = await requireUser(c, true);
@@ -688,8 +859,20 @@ app.delete("/api/providers/:id", async (c) => {
 });
 
 app.get("/api/agents", async (c) => {
-  if (!(await requireUser(c))) return c.json({ error: "Unauthorized" }, 401);
-  const agents = await list("agents");
+  const user = await requireUser(c);
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  const agents = (await list("agents")).filter(
+    (agent) => user.platformRole === "Admin" || agent.ownerId === user.id || false,
+  );
+  if (user.platformRole !== "Admin") {
+    const grants = await list("user_agent_grants", `userId="${user.id}"`);
+    agents.push(
+      ...(await list("agents")).filter(
+        (agent) =>
+          grants.some((grant) => grant.agentId === agent.id) && !agents.some((existing) => existing.id === agent.id),
+      ),
+    );
+  }
   const tools = await list("agent_tools");
   return c.json(
     agents.map((agent) => ({ ...agent, toolCount: tools.filter((tool) => tool.agentId === agent.id).length })),
@@ -734,6 +917,30 @@ app.post("/api/agents/:id/tools", async (c) => {
     .parse(await c.req.json());
   const tool = await pb.collection("agent_tools").create({ ...input, agentId: c.req.param("id") });
   return c.json(json(tool), 201);
+});
+app.patch("/api/agents/:id/tools/:toolId", async (c) => {
+  const user = await requireUser(c, true);
+  if (!user) return c.json({ error: "Forbidden" }, 403);
+  const tool = await one("agent_tools", c.req.param("toolId"));
+  if (tool.agentId !== c.req.param("id")) return c.json({ error: "Tool does not belong to this agent" }, 404);
+  const input = z
+    .object({
+      providerId: z.string().optional(),
+      operation: z.string().optional(),
+      exposedName: z
+        .string()
+        .regex(/^[a-z][a-z0-9_.-]*$/)
+        .optional(),
+      description: z.string().optional(),
+      inputSchema: z.record(z.unknown()).optional(),
+      inputMap: z.record(z.string()).optional(),
+      fixedArgs: z.record(z.unknown()).optional(),
+      outputMap: z.record(z.string()).optional(),
+    })
+    .parse(await c.req.json());
+  const updated = await pb.collection("agent_tools").update(tool.id, input);
+  await audit(user.id, "update_agent_tool", tool.id, input);
+  return c.json(json(updated));
 });
 app.delete("/api/agents/:id/tools/:toolId", async (c) => {
   const user = await requireUser(c, true);
@@ -842,8 +1049,17 @@ app.delete("/api/agents/:id", async (c) => {
 });
 
 app.get("/api/projects", async (c) => {
-  if (!(await requireUser(c))) return c.json({ error: "Unauthorized" }, 401);
-  const [projects, roles, workspaces] = await Promise.all([list("projects"), list("roles"), list("workspaces")]);
+  const user = await requireUser(c);
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  let [projects, roles, workspaces] = await Promise.all([list("projects"), list("roles"), list("workspaces")]);
+  if (user.platformRole !== "Admin") {
+    const grants = await list("user_project_grants", `userId="${user.id}"`);
+    projects = projects.filter(
+      (project) => project.ownerId === user.id || grants.some((grant) => grant.projectId === project.id),
+    );
+    roles = roles.filter((role) => projects.some((project) => project.id === role.projectId));
+    workspaces = workspaces.filter((workspace) => projects.some((project) => project.id === workspace.projectId));
+  }
   return c.json(
     projects.map((project) => ({
       ...project,
@@ -887,6 +1103,7 @@ app.post("/api/projects", async (c) => {
         "git.pull",
         "git.push",
         "pull_request.create",
+        "workspace.create",
       ],
       toolIds: [],
       sandboxPolicy: input.sandboxDefaults,
@@ -908,15 +1125,59 @@ app.post("/api/projects/:id/roles", async (c) => {
       capabilities: z.array(z.string()).default([]),
       maxWorkspaces: z.number().int().min(1).default(1),
       sandboxPolicy: z.record(z.unknown()).default({}),
+      toolIds: z.array(z.string()).default([]),
     })
     .parse(await c.req.json());
-  const role = await pb.collection("roles").create({ ...input, projectId: c.req.param("id"), toolIds: [] });
+  const role = await pb.collection("roles").create({ ...input, projectId: c.req.param("id") });
   return c.json(json(role), 201);
+});
+app.patch("/api/projects/:id", async (c) => {
+  const user = await requireUser(c, true);
+  if (!user) return c.json({ error: "Forbidden" }, 403);
+  const input = z
+    .object({
+      name: z.string().min(1).optional(),
+      description: z.string().optional(),
+      repository: z.string().optional(),
+      defaultBranch: z.string().min(1).optional(),
+      gitProvider: z.enum(["Gitea", "GitHub", "GitLab", "Generic", "Local"]).optional(),
+      sandboxDefaults: z.record(z.unknown()).optional(),
+    })
+    .parse(await c.req.json());
+  const project = await pb.collection("projects").update(c.req.param("id"), input);
+  await audit(user.id, "update_project", project.id, input);
+  return c.json(json(project));
+});
+app.patch("/api/roles/:id", async (c) => {
+  const user = await requireUser(c, true);
+  if (!user) return c.json({ error: "Forbidden" }, 403);
+  const input = z
+    .object({
+      name: z.string().min(1).optional(),
+      capabilities: z.array(z.string()).optional(),
+      toolIds: z.array(z.string()).optional(),
+      maxWorkspaces: z.number().int().min(1).optional(),
+      sandboxPolicy: z.record(z.unknown()).optional(),
+    })
+    .parse(await c.req.json());
+  const role = await pb.collection("roles").update(c.req.param("id"), input);
+  await audit(user.id, "update_role", role.id, input);
+  return c.json(json(role));
+});
+app.delete("/api/roles/:id", async (c) => {
+  const user = await requireUser(c, true);
+  if (!user) return c.json({ error: "Forbidden" }, 403);
+  const role = await one("roles", c.req.param("id"));
+  if ((await list("workspaces", `roleId="${role.id}"`)).length)
+    return c.json({ error: "Release this role's workspaces first" }, 409);
+  await pb.collection("roles").delete(role.id);
+  await audit(user.id, "delete_role", role.id);
+  return c.body(null, 204);
 });
 app.post("/api/projects/:id/git-credential", async (c) => {
   const user = await requireUser(c, true);
   if (!user) return c.json({ error: "Forbidden" }, 403);
-  const project = await one("projects", c.req.param("id"));
+  const project = await one("projects", c.req.param("id")!);
   const input = z
     .object({ name: z.string().min(1), baseUrl: z.string().url(), token: z.string().min(1) })
     .parse(await c.req.json());
@@ -955,23 +1216,52 @@ app.get("/api/workspaces/:id/inspect", async (c) => {
   const docker = workspace.sandboxId
     ? Bun.spawnSync(["docker", "inspect", "--format", "{{.State.Status}}", String(workspace.sandboxId)])
     : null;
+  const stats = workspace.sandboxId
+    ? Bun.spawnSync([
+        "docker",
+        "stats",
+        "--no-stream",
+        "--format",
+        "{{.CPUPerc}} {{.MemUsage}}",
+        String(workspace.sandboxId),
+      ])
+    : null;
   return c.json({
     ...workspace,
     gitStatus,
     diff,
     sandboxState: docker?.exitCode === 0 ? docker.stdout.toString().trim() : workspace.sandboxState,
+    resourceUsage: stats?.exitCode === 0 ? stats.stdout.toString().trim() : "Unavailable",
   });
 });
-app.post("/api/projects/:id/workspaces", async (c) => {
+app.get("/api/workspaces/:id/diff", async (c) => {
+  if (!(await requireUser(c, true))) return c.json({ error: "Forbidden" }, 403);
+  const workspace = await one("workspaces", c.req.param("id"));
+  return c.json({ diff: commandOutput(["git", "-C", String(workspace.worktreePath), "diff"], 60_000) });
+});
+app.get("/api/workspaces/:id/logs", async (c) => {
+  if (!(await requireUser(c, true))) return c.json({ error: "Forbidden" }, 403);
+  const workspace = await one("workspaces", c.req.param("id"));
+  if (!workspace.sandboxId) return c.json({ logs: "Sandbox is stopped" });
+  const result = Bun.spawnSync(["docker", "logs", "--tail", "500", String(workspace.sandboxId)], { timeout: 60_000 });
+  return c.json({ logs: result.stdout.toString() + result.stderr.toString() });
+});
+const createWorkspace = async (c: Context) => {
   const user = await requireUser(c, true);
-  if (!user) return c.json({ error: "Forbidden" }, 403);
   const input = z
     .object({ roleId: z.string(), label: z.string().min(1), branch: z.string().min(1) })
     .parse(await c.req.json());
+  const raw = c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") ?? "";
+  const roleCredential = (await list("workspace_credentials", `tokenHash="${await sha256(raw)}"`))[0];
+  const agentCreated = !user && Boolean(roleCredential && !roleCredential.revoked);
+  if (!user && !agentCreated) return c.json({ error: "Forbidden" }, 403);
   const role = await one("roles", input.roleId);
+  if (agentCreated && roleCredential!.roleId !== role.id) return c.json({ error: "Forbidden" }, 403);
+  if (agentCreated && !(role.capabilities as string[]).includes("workspace.create"))
+    return c.json({ error: "Role cannot create workspaces" }, 403);
   const active = await list("workspaces", `roleId="${role.id}"`);
   if (active.length >= Number(role.maxWorkspaces)) return c.json({ error: "Role workspace limit reached" }, 409);
-  const project = await one("projects", c.req.param("id"));
+  const project = await one("projects", c.req.param("id")!);
   if (role.projectId !== project.id) return c.json({ error: "Role does not belong to this project" }, 422);
   const handle = `ws_${token()}`;
   const root = process.env.WORKSPACE_ROOT ?? "/var/lib/subpolar/workspaces";
@@ -1003,40 +1293,14 @@ app.post("/api/projects/:id/workspaces", async (c) => {
       422,
     );
   }
-  const policy = (role.sandboxPolicy ?? project.sandboxDefaults ?? {}) as Record<string, unknown>;
-  const image = String(policy.image ?? "alpine:3.21");
-  const args = [
-    "run",
-    "-d",
-    "--rm",
-    "--name",
-    `subpolar-${handle}`,
-    "--cpus",
-    String(policy.cpu ?? "1"),
-    "--memory",
-    String(policy.memory ?? "1g"),
-    "--pids-limit",
-    String(policy.pids ?? 256),
-    "--cap-drop",
-    "ALL",
-    "--security-opt",
-    "no-new-privileges",
-    "--tmpfs",
-    "/tmp:rw,nosuid,nodev,noexec,size=64m",
-    "-v",
-    `${worktreePath}:/workspace`,
-    "-w",
-    "/workspace",
-    "--network",
-    policy.network ? "bridge" : "none",
-    image,
-    "sleep",
-    "infinity",
-  ];
-  const run = Bun.spawnSync(["docker", ...args]);
-  if (run.exitCode === 0) {
-    sandboxId = run.stdout.toString().trim();
-    sandboxState = "Running";
+  if (agentCreated) {
+    const policy = (role.sandboxPolicy ?? project.sandboxDefaults ?? {}) as Record<string, unknown>;
+    const image = String(policy.image ?? "alpine:3.21");
+    const run = Bun.spawnSync(["docker", ...sandboxArgs(worktreePath, handle, policy), image, "sleep", "infinity"]);
+    if (run.exitCode === 0) {
+      sandboxId = run.stdout.toString().trim();
+      sandboxState = "Running";
+    }
   }
   const workspace = await pb.collection("workspaces").create({
     projectId: project.id,
@@ -1049,10 +1313,16 @@ app.post("/api/projects/:id/workspaces", async (c) => {
     sandboxId,
     sandboxState,
     gitStatus: "Unknown",
+    lastActivity: new Date().toISOString(),
   });
-  await audit(user.id, "create_workspace", workspace.id);
+  if (roleCredential)
+    await pb.collection("workspace_credentials").update(roleCredential.id, { lastUsed: new Date().toISOString() });
+  await audit(user?.id ?? String(roleCredential?.id), "create_workspace", workspace.id, { agentCreated });
   return c.json({ ...json(workspace), handle }, 201);
-});
+};
+app.post("/api/projects/:id/workspaces", createWorkspace);
+// Harness callers use the versioned contract; administrators use the management route above.
+app.post("/api/v1/projects/:id/workspaces", createWorkspace);
 app.post("/api/roles/:id/credentials", async (c) => {
   const user = await requireUser(c, true);
   if (!user) return c.json({ error: "Forbidden" }, 403);
@@ -1078,29 +1348,7 @@ app.post("/api/workspaces/:id/start", async (c) => {
   const policy = (role.sandboxPolicy ?? project.sandboxDefaults ?? {}) as Record<string, unknown>;
   const result = Bun.spawnSync([
     "docker",
-    "run",
-    "-d",
-    "--rm",
-    "--name",
-    `subpolar-${workspace.handle}`,
-    "--cpus",
-    String(policy.cpu ?? "1"),
-    "--memory",
-    String(policy.memory ?? "1g"),
-    "--pids-limit",
-    String(policy.pids ?? 256),
-    "--cap-drop",
-    "ALL",
-    "--security-opt",
-    "no-new-privileges",
-    "--tmpfs",
-    "/tmp:rw,nosuid,nodev,noexec,size=64m",
-    "-v",
-    `${workspace.worktreePath}:/workspace`,
-    "-w",
-    "/workspace",
-    "--network",
-    policy.network ? "bridge" : "none",
+    ...sandboxArgs(String(workspace.worktreePath), String(workspace.handle), policy),
     String(policy.image ?? "alpine:3.21"),
     "sleep",
     "infinity",
@@ -1274,7 +1522,10 @@ app.post("/api/v1/workspaces/:handle/files/write", async (c) => {
   try {
     const { path, content } = z.object({ path: z.string().min(1), content: z.string() }).parse(await c.req.json());
     const target = safeWorkspacePath(String(workspace.worktreePath), path);
+    const parent = target.slice(0, target.lastIndexOf("/"));
+    if (parent) commandOutput(["mkdir", "-p", parent]);
     await Bun.write(target, content);
+    await pb.collection("workspaces").update(workspace.id, { lastActivity: new Date().toISOString() });
     return c.json({ path, bytes: content.length });
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : "Write failed" }, 422);
@@ -1300,9 +1551,11 @@ app.post("/api/v1/workspaces/:handle/shell", async (c) => {
   const workspace = await authorizedWorkspace(c, "shell.execute");
   if (!workspace) return c.json({ error: "Unauthorized" }, 401);
   const { command } = z.object({ command: z.string().min(1).max(10000) }).parse(await c.req.json());
+  const role = await one("roles", String(workspace.roleId));
   const result = Bun.spawnSync(["docker", "exec", String(workspace.sandboxId), "sh", "-lc", command], {
-    timeout: 600000,
+    timeout: workspaceTimeout((role.sandboxPolicy ?? {}) as Record<string, unknown>),
   });
+  await pb.collection("workspaces").update(workspace.id, { lastActivity: new Date().toISOString() });
   return c.json({ exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() });
 });
 app.post("/api/v1/workspaces/:handle/git/:operation", async (c) => {

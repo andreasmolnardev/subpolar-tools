@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { FolderGit2, Play, Plus, Square } from "lucide-react";
 import { Button } from "../components/ui/button";
+import { ConfirmDialog } from "../components/ui/dialog";
 
 type RecordItem = Record<string, any>;
 type Request = (path: string, options?: RequestInit) => Promise<any>;
@@ -9,15 +10,25 @@ export function ProjectsPage({ request }: { request: Request }) {
   const [projects, setProjects] = useState<RecordItem[]>([]);
   const [selected, setSelected] = useState<RecordItem | null>(null);
   const [roles, setRoles] = useState<RecordItem[]>([]);
+  const [providers, setProviders] = useState<RecordItem[]>([]);
   const [workspaces, setWorkspaces] = useState<RecordItem[]>([]);
   const [showProject, setShowProject] = useState(false);
   const [showRole, setShowRole] = useState(false);
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [showGit, setShowGit] = useState(false);
+  const [editingRole, setEditingRole] = useState<RecordItem | null>(null);
+  const [editingProject, setEditingProject] = useState(false);
+  const [deletingRole, setDeletingRole] = useState<RecordItem | null>(null);
+  const [deletingProject, setDeletingProject] = useState(false);
   const [inspection, setInspection] = useState<RecordItem | null>(null);
   const [workspaceSecret, setWorkspaceSecret] = useState("");
   const [error, setError] = useState("");
-  const load = () => request("/api/projects").then(setProjects);
+  const [releasing, setReleasing] = useState<RecordItem | null>(null);
+  const load = async () => {
+    const [nextProjects, nextProviders] = await Promise.all([request("/api/projects"), request("/api/providers")]);
+    setProjects(nextProjects);
+    setProviders(nextProviders);
+  };
   const select = async (project: RecordItem) => {
     setSelected(project);
     const [nextRoles, nextWorkspaces] = await Promise.all([
@@ -59,8 +70,8 @@ export function ProjectsPage({ request }: { request: Request }) {
     event.preventDefault();
     if (!selected) return;
     const form = new FormData(event.currentTarget);
-    await request(`/api/projects/${selected.id}/roles`, {
-      method: "POST",
+    await request(editingRole ? `/api/roles/${editingRole.id}` : `/api/projects/${selected.id}/roles`, {
+      method: editingRole ? "PATCH" : "POST",
       body: JSON.stringify({
         name: form.get("name"),
         maxWorkspaces: Number(form.get("maxWorkspaces")),
@@ -68,6 +79,7 @@ export function ProjectsPage({ request }: { request: Request }) {
           .split(",")
           .map((item) => item.trim())
           .filter(Boolean),
+        toolIds: form.getAll("toolIds").map(String),
         sandboxPolicy: {
           image: form.get("image"),
           cpu: form.get("cpu"),
@@ -78,7 +90,25 @@ export function ProjectsPage({ request }: { request: Request }) {
       }),
     });
     setShowRole(false);
+    setEditingRole(null);
     await select(selected);
+  };
+  const saveProject = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selected) return;
+    const form = new FormData(event.currentTarget);
+    const project = await request(`/api/projects/${selected.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: form.get("name"),
+        description: form.get("description"),
+        repository: form.get("repository"),
+        defaultBranch: form.get("defaultBranch"),
+      }),
+    });
+    setEditingProject(false);
+    await load();
+    await select(project);
   };
   const submitWorkspace = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -115,7 +145,7 @@ export function ProjectsPage({ request }: { request: Request }) {
   const inspect = async (workspace: RecordItem) =>
     setInspection(await request(`/api/workspaces/${workspace.id}/inspect`));
   const release = async (workspace: RecordItem) => {
-    if (!selected || !confirm(`Release workspace ${workspace.label}? This deletes its sandbox and worktree.`)) return;
+    if (!selected) return;
     await request(`/api/workspaces/${workspace.id}`, { method: "DELETE" });
     await select(selected);
     await load();
@@ -198,14 +228,36 @@ export function ProjectsPage({ request }: { request: Request }) {
                   <Button variant="outline" size="sm" onClick={() => setShowGit(!showGit)}>
                     Git integration
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => setShowRole(!showRole)}>
+                  <Button variant="outline" size="sm" onClick={() => setEditingProject(!editingProject)}>
+                    Settings
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setEditingRole(null);
+                      setShowRole(!showRole);
+                    }}
+                  >
                     Add role
                   </Button>
                   <Button size="sm" onClick={() => setShowWorkspace(!showWorkspace)}>
                     Create workspace
                   </Button>
+                  <Button variant="destructive" size="sm" onClick={() => setDeletingProject(true)}>
+                    Delete
+                  </Button>
                 </div>
               </div>
+              {editingProject && (
+                <form className="mt-5 grid gap-3 border-t pt-5 md:grid-cols-2" onSubmit={saveProject}>
+                  <input required name="name" defaultValue={selected.name} />
+                  <input name="description" defaultValue={selected.description} />
+                  <input name="repository" defaultValue={selected.repository} />
+                  <input name="defaultBranch" defaultValue={selected.defaultBranch} />
+                  <Button className="md:col-span-2">Save settings</Button>
+                </form>
+              )}
               {showGit && (
                 <form className="mt-5 grid gap-3 border-t pt-5 md:grid-cols-3" onSubmit={submitGit}>
                   <input required name="name" placeholder="Credential name" />
@@ -219,11 +271,21 @@ export function ProjectsPage({ request }: { request: Request }) {
               )}
               {showRole && (
                 <form className="mt-5 grid gap-3 border-t pt-5 md:grid-cols-3" onSubmit={submitRole}>
-                  <input required name="name" placeholder="Role name" />
-                  <input name="maxWorkspaces" type="number" min="1" defaultValue="1" />
+                  <input required name="name" defaultValue={editingRole?.name} placeholder="Role name" />
+                  <input name="maxWorkspaces" type="number" min="1" defaultValue={editingRole?.maxWorkspaces ?? "1"} />
                   <input
                     name="capabilities"
-                    defaultValue="filesystem.read, filesystem.write, filesystem.search, shell.execute, git.status, git.diff, git.log"
+                    defaultValue={(
+                      editingRole?.capabilities || [
+                        "filesystem.read",
+                        "filesystem.write",
+                        "filesystem.search",
+                        "shell.execute",
+                        "git.status",
+                        "git.diff",
+                        "git.log",
+                      ]
+                    ).join(", ")}
                   />
                   <input name="image" defaultValue="alpine:3.21" placeholder="Sandbox image" />
                   <input name="cpu" defaultValue="1" placeholder="CPU limit" />
@@ -233,7 +295,25 @@ export function ProjectsPage({ request }: { request: Request }) {
                     <input name="network" type="checkbox" className="h-4 w-4" />
                     Allow network access for this role
                   </label>
-                  <Button className="md:col-span-3">Save role</Button>
+                  <fieldset className="md:col-span-3">
+                    <legend className="text-sm font-medium">External providers available to this role</legend>
+                    <div className="mt-2 flex flex-wrap gap-3">
+                      {providers
+                        .filter((provider) => !provider.disabled)
+                        .map((provider) => (
+                          <label className="flex items-center gap-2 text-sm" key={provider.id}>
+                            <input
+                              name="toolIds"
+                              type="checkbox"
+                              value={provider.id}
+                              defaultChecked={Boolean(editingRole?.toolIds?.includes(provider.id))}
+                            />
+                            {provider.name}
+                          </label>
+                        ))}
+                    </div>
+                  </fieldset>
+                  <Button className="md:col-span-3">{editingRole ? "Update role" : "Save role"}</Button>
                 </form>
               )}
               {showWorkspace && (
@@ -275,9 +355,28 @@ export function ProjectsPage({ request }: { request: Request }) {
                           <Button variant="outline" size="sm" onClick={() => void createWorkspaceCredential(role)}>
                             Credential
                           </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setEditingRole(role);
+                              setShowRole(true);
+                            }}
+                          >
+                            Edit
+                          </Button>
+                          <Button variant="destructive" size="sm" onClick={() => setDeletingRole(role)}>
+                            Delete
+                          </Button>
                         </div>
                       </div>
                       <p className="mt-1 truncate text-xs text-slate-500">{(role.capabilities || []).join(", ")}</p>
+                      <p className="mt-1 text-xs text-cyan-400">
+                        Providers:{" "}
+                        {(role.toolIds || [])
+                          .map((id: string) => providers.find((provider) => provider.id === id)?.name ?? id)
+                          .join(", ") || "None"}
+                      </p>
                     </div>
                   ))}
                 </div>
@@ -322,7 +421,7 @@ export function ProjectsPage({ request }: { request: Request }) {
                               </>
                             )}
                           </Button>
-                          <Button variant="destructive" size="sm" onClick={() => void release(workspace)}>
+                          <Button variant="destructive" size="sm" onClick={() => setReleasing(workspace)}>
                             Release
                           </Button>
                         </div>
@@ -343,6 +442,43 @@ export function ProjectsPage({ request }: { request: Request }) {
           )}
         </section>
       </div>
+      <ConfirmDialog
+        open={Boolean(releasing)}
+        onOpenChange={(open) => !open && setReleasing(null)}
+        title={`Release ${releasing?.label ?? "workspace"}?`}
+        description="This deletes the workspace sandbox and worktree."
+        onConfirm={() => {
+          const workspace = releasing;
+          setReleasing(null);
+          if (workspace) void release(workspace);
+        }}
+      />
+      <ConfirmDialog
+        open={Boolean(deletingRole)}
+        onOpenChange={(open) => !open && setDeletingRole(null)}
+        title={`Delete ${deletingRole?.name ?? "role"}?`}
+        description="The role must have no active workspaces."
+        onConfirm={() => {
+          const role = deletingRole;
+          setDeletingRole(null);
+          if (role && selected)
+            void request(`/api/roles/${role.id}`, { method: "DELETE" }).then(() => select(selected));
+        }}
+      />
+      <ConfirmDialog
+        open={deletingProject}
+        onOpenChange={setDeletingProject}
+        title={`Delete ${selected?.name ?? "project"}?`}
+        description="The project must have no active workspaces."
+        onConfirm={() => {
+          if (selected)
+            void request(`/api/projects/${selected.id}`, { method: "DELETE" }).then(async () => {
+              setSelected(null);
+              setDeletingProject(false);
+              await load();
+            });
+        }}
+      />
     </div>
   );
 }
