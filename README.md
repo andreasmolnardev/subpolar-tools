@@ -29,6 +29,17 @@ Run `bun test` for fast unit coverage. With a running deployment, execute the se
 
 Run `bun run test:e2e` to build an isolated Docker deployment and verify OpenAPI, MCP HTTP, MCP command/stdio, harness contracts, worktree creation, sandbox lifecycle, and cross-workspace path/mount/network isolation. It requires a local Docker daemon, pulls `alpine:3.21` when needed, and removes its dedicated volumes on exit. The suite is deliberately environment-gated: CI runs it only where Docker is available.
 
+## Planned Tools CLI
+
+The planned standalone `subpolar-tools` CLI will invoke tools exposed by an agent profile. It is not included in the production Docker image. Its implementation plan is in [`plans/TOOLS-CLI.md`](plans/TOOLS-CLI.md).
+
+```sh
+SUBPOLAR_AGENT_TOKEN=spat_... subpolar-tools get
+SUBPOLAR_AGENT_TOKEN=spat_... subpolar-tools weather.lookup '{"city":"arctic"}'
+```
+
+`SUBPOLAR_AGENT_TOKEN` supplies the agent profile credential. `SUBPOLAR_API_URL` will select the API origin and default to `http://localhost:3000`. Tool names are profile-exposed names, not provider IDs or underlying provider operations. Tool properties must be a JSON object.
+
 ## Architecture
 
 - The React administrative application uses only Hono's `/api` management API.
