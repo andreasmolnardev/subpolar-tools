@@ -9,7 +9,8 @@ const pb = new PocketBase(pbUrl);
 const app = new Hono();
 const adminEmail = process.env.SUBPOLAR_ADMIN_EMAIL ?? "admin@example.com";
 const adminPassword = process.env.SUBPOLAR_ADMIN_PASSWORD ?? "development-only-password";
-const rateWindows = new Map<string, { started: number; count: number }>();
+const auditRetentionDays = Math.max(1, Number(process.env.SUBPOLAR_AUDIT_RETENTION_DAYS ?? 365));
+const rateLimitRetentionMs = 15 * 60_000;
 type McpSession = {
   process: ReturnType<typeof Bun.spawn>;
   pending: Map<number, { resolve: (value: any) => void; reject: (reason: Error) => void; timeout: Timer }>;
@@ -185,6 +186,7 @@ async function setup() {
     text("resource"),
     jsonField("details"),
   ]);
+  await ensureCollection("rate_limit_events", "base", [text("bucket", true), text("key", true)]);
   await ensureCollection("user_agent_grants", "base", [text("userId", true), text("agentId", true)]);
   await ensureCollection("user_project_grants", "base", [text("userId", true), text("projectId", true)]);
   try {
@@ -203,7 +205,55 @@ async function setup() {
 }
 
 async function audit(actorId: string, action: string, resource: string, details: object = {}) {
-  await pb.collection("audit_events").create({ actorId, action, resource, details });
+  await pruneAuditEvents();
+  await pb.collection("audit_events").create({ actorId, action, resource, details: redactAuditDetails(details) });
+}
+
+function redactAuditDetails(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactAuditDetails);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      /password|secret|token|authorization|credential|ciphertext|api.?key/i.test(key)
+        ? "[redacted]"
+        : redactAuditDetails(item),
+    ]),
+  );
+}
+
+async function pruneAuditEvents() {
+  const cutoff = new Date(Date.now() - auditRetentionDays * 24 * 60 * 60 * 1000).toISOString();
+  const expired = await list("audit_events", `created < "${cutoff}"`);
+  await Promise.all(expired.map((event) => pb.collection("audit_events").delete(event.id)));
+}
+
+function auditResourceType(action: string) {
+  if (/user|password/.test(action)) return "user";
+  if (/provider/.test(action)) return "provider";
+  if (/agent/.test(action)) return "agent";
+  if (/project|role|workspace|sandbox/.test(action)) return "project";
+  if (/session|sign_/.test(action)) return "session";
+  return "resource";
+}
+
+async function auditEventView(
+  event: RecordData,
+  users: RecordData[],
+): Promise<RecordData & { actor: object; resourceDetails: { type: string; id: unknown; label?: string } }> {
+  const actor = users.find((user) => user.id === event.actorId);
+  const resourceType = auditResourceType(String(event.action));
+  let resourceLabel: string | undefined;
+  if (resourceType === "user") {
+    const user = users.find((item) => item.id === event.resource);
+    resourceLabel = user ? String(user.displayName || user.email) : undefined;
+  }
+  return {
+    ...event,
+    details: redactAuditDetails(event.details),
+    actor: actor ? { id: actor.id, displayName: actor.displayName, email: actor.email } : { id: event.actorId },
+    resourceDetails: { type: resourceType, id: event.resource, ...(resourceLabel ? { label: resourceLabel } : {}) },
+  };
 }
 
 async function currentSession(header?: string) {
@@ -250,16 +300,26 @@ const list = async (collection: string, filter = "") =>
     await pb.collection(collection).getFullList({ filter: filter.replace(/([A-Za-z0-9_])=/g, "$1 = ") }),
   ) as RecordData[];
 const one = async (collection: string, id: string) => json(await pb.collection(collection).getOne(id)) as RecordData;
-function rateLimited(c: Context, bucket: string, limit = 5, windowMs = 60_000) {
-  const key = `${bucket}:${c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? "local"}`;
-  const now = Date.now();
-  const current = rateWindows.get(key);
-  if (!current || now - current.started > windowMs) {
-    rateWindows.set(key, { started: now, count: 1 });
-    return false;
+async function rateLimited(c: Context, bucket: string, limit = 5, windowMs = 60_000) {
+  // Only accept forwarded addresses when the deployment explicitly trusts its proxy.
+  const address =
+    process.env.SUBPOLAR_TRUST_PROXY === "true"
+      ? (c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown")
+      : "unknown";
+  const key = await sha256(`${bucket}:${address}`);
+  const cutoff = new Date(Date.now() - windowMs).toISOString();
+  const retentionCutoff = new Date(Date.now() - Math.max(windowMs, rateLimitRetentionMs)).toISOString();
+  try {
+    const expired = await list("rate_limit_events", `created < "${retentionCutoff}"`);
+    await Promise.all(expired.map((event) => pb.collection("rate_limit_events").delete(event.id)));
+    await pb.collection("rate_limit_events").create({ bucket, key });
+    return (
+      (await list("rate_limit_events", `bucket="${bucket}" && key="${key}" && created >= "${cutoff}"`)).length > limit
+    );
+  } catch (error) {
+    console.error("Rate-limit storage unavailable", error);
+    return true;
   }
-  current.count += 1;
-  return current.count > limit;
 }
 const configOf = (record: RecordData) => (record.configuration ?? {}) as Record<string, unknown>;
 
@@ -783,7 +843,7 @@ app.onError((error, c) => {
 app.get("/api/health", (c) => c.json({ ok: true }));
 
 app.post("/api/auth/sign-in", async (c) => {
-  if (rateLimited(c, "sign-in", 10)) return c.json({ error: "Too many attempts; try again shortly" }, 429);
+  if (await rateLimited(c, "sign-in", 10)) return c.json({ error: "Too many attempts; try again shortly" }, 429);
   const input = z
     .object({ email: z.string().email(), password: z.string().min(1), persistent: z.boolean().default(false) })
     .parse(await c.req.json());
@@ -809,7 +869,7 @@ app.post("/api/auth/sign-in", async (c) => {
   }
 });
 app.post("/api/auth/forgot-password", async (c) => {
-  if (rateLimited(c, "password-reset", 5, 15 * 60_000)) return c.json({ ok: true });
+  if (await rateLimited(c, "password-reset", 5, 15 * 60_000)) return c.json({ ok: true });
   const input = z.object({ email: z.string().email() }).parse(await c.req.json());
   try {
     await pb.collection("platform_users").requestPasswordReset(input.email);
@@ -819,6 +879,8 @@ app.post("/api/auth/forgot-password", async (c) => {
   return c.json({ ok: true });
 });
 app.post("/api/auth/reset-password", async (c) => {
+  if (await rateLimited(c, "password-reset-confirm", 10, 15 * 60_000))
+    return c.json({ error: "Too many attempts; try again shortly" }, 429);
   const input = z.object({ token: z.string().min(1), password: z.string().min(12) }).parse(await c.req.json());
   await pb.collection("platform_users").confirmPasswordReset(input.token, input.password, input.password);
   return c.json({ ok: true });
@@ -996,16 +1058,45 @@ app.post("/api/users/:id/revoke-sessions", async (c) => {
   await audit(admin.id, "revoke_user_sessions", c.req.param("id"));
   return c.json({ ok: true });
 });
+app.post("/api/users/:id/sessions/:sessionId/revoke", async (c) => {
+  const admin = await requireUser(c, true);
+  if (!admin) return c.json({ error: "Forbidden" }, 403);
+  const session = await one("sessions", c.req.param("sessionId"));
+  if (session.userId !== c.req.param("id")) return c.json({ error: "Not found" }, 404);
+  await pb.collection("sessions").update(session.id, { revoked: true });
+  await audit(admin.id, "revoke_user_session", session.id, { userId: session.userId });
+  return c.json({ ok: true });
+});
 app.get("/api/audit-events", async (c) => {
   if (!(await requireUser(c, true))) return c.json({ error: "Forbidden" }, 403);
-  const action = c.req.query("action");
-  const actorId = c.req.query("actorId");
-  const events = await list("audit_events");
-  return c.json(
-    events
-      .filter((event) => (!action || event.action === action) && (!actorId || event.actorId === actorId))
+  const query = z
+    .object({
+      action: z.string().max(120).optional(),
+      actorId: z.string().max(64).optional(),
+      resource: z.string().max(120).optional(),
+      resourceType: z.string().max(40).optional(),
+      from: z.string().datetime().optional(),
+      to: z.string().datetime().optional(),
+    })
+    .parse(Object.fromEntries(new URL(c.req.url).searchParams));
+  await pruneAuditEvents();
+  const users = await list("platform_users");
+  const events = await Promise.all((await list("audit_events")).map((event) => auditEventView(event, users)));
+  return c.json({
+    retentionDays: auditRetentionDays,
+    events: events
+      .filter(
+        (event) =>
+          (!query.action || event.action === query.action) &&
+          (!query.actorId || event.actorId === query.actorId) &&
+          (!query.resource || event.resource === query.resource) &&
+          (!query.resourceType || event.resourceDetails.type === query.resourceType) &&
+          (!query.from || String(event.created) >= query.from) &&
+          (!query.to || String(event.created) <= query.to),
+      )
+      .sort((left, right) => String(right.created).localeCompare(String(left.created)))
       .slice(0, 100),
-  );
+  });
 });
 
 app.get("/api/providers", async (c) => {
