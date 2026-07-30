@@ -9,7 +9,7 @@ import {
   safeWorkspacePath,
   schemaChanged,
   validateAdapter,
-} from "../src/lib/runtime";
+} from "../packages/runtime/src";
 
 test("adapter mapping preserves hidden arguments and exposes selected output", () => {
   const adapter = {

@@ -3,11 +3,10 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "jsx": "react-jsx",
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["bun", "vite/client"]
+    "types": ["bun"]
   },
   "include": ["src"]
 }

@@ -13,7 +13,7 @@ import {
   safeWorkspacePath,
   schemaChanged,
   validateAdapter,
-} from "./lib/runtime";
+} from "@subpolar/runtime";
 
 const pbUrl = process.env.PB_URL ?? "http://127.0.0.1:8090";
 const pb = new PocketBase(pbUrl);

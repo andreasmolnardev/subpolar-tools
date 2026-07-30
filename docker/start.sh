@@ -11,4 +11,4 @@ else
   pocketbase serve --http=127.0.0.1:8090 --dir /app/pb_data &
 fi
 until curl -fsS http://127.0.0.1:8090/api/health >/dev/null; do sleep 1; done
-exec bun /app/src/server.ts
+exec bun /app/services/api/src/server.ts

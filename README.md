@@ -2,6 +2,17 @@
 
 Subpolar Tools is a Bun, Hono, TypeScript, React, shadcn-style administration platform for model- and harness-agnostic tool calling and isolated coding workspaces.
 
+## Repository layout
+
+This Bun-workspace monorepo separates deployable surfaces from shared domain code:
+
+- `apps/web`: Vite/React administrative application.
+- `services/api`: Hono API, PocketBase integration, and sandbox manager.
+- `packages/runtime`: shared tool-adaptation, credential, authorization, and workspace utilities.
+- `tests`: cross-package unit, integration, and Docker end-to-end coverage.
+
+Run root scripts for the full system, or use `bun --filter @subpolar/web ...`, `bun --filter @subpolar/api ...`, and `bun --filter @subpolar/runtime ...` for an individual workspace.
+
 ## Run
 
 1. Copy `.env.example` to `.env` and replace every secret.
