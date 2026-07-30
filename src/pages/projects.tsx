@@ -27,6 +27,9 @@ export function ProjectsPage({ request }: { request: Request }) {
   const [deletingRole, setDeletingRole] = useState<RecordItem | null>(null);
   const [deletingProject, setDeletingProject] = useState(false);
   const [inspection, setInspection] = useState<RecordItem | null>(null);
+  const [workspaceOutput, setWorkspaceOutput] = useState<{ title: string; content: string } | null>(null);
+  const [gitTarget, setGitTarget] = useState<RecordItem | null>(null);
+  const [prTarget, setPrTarget] = useState<RecordItem | null>(null);
   const [workspaceSecret, setWorkspaceSecret] = useState("");
   const [error, setError] = useState("");
   const [releasing, setReleasing] = useState<RecordItem | null>(null);
@@ -74,6 +77,9 @@ export function ProjectsPage({ request }: { request: Request }) {
           homeSize: form.get("homeSize"),
           environment: JSON.parse(String(form.get("environment") || "{}")),
           caches: JSON.parse(String(form.get("caches") || "{}")),
+          ...(form.get("gitAuthorName") || form.get("gitAuthorEmail")
+            ? { gitIdentity: { name: form.get("gitAuthorName"), email: form.get("gitAuthorEmail") } }
+            : {}),
         },
       }),
     });
@@ -113,6 +119,9 @@ export function ProjectsPage({ request }: { request: Request }) {
           homeSize: form.get("homeSize"),
           environment: JSON.parse(String(form.get("environment") || "{}")),
           caches: JSON.parse(String(form.get("caches") || "{}")),
+          ...(form.get("gitAuthorName") || form.get("gitAuthorEmail")
+            ? { gitIdentity: { name: form.get("gitAuthorName"), email: form.get("gitAuthorEmail") } }
+            : {}),
           secretMounts: form.getAll("secretId").map((secretId) => ({
             secretId,
             mountPath: `/run/secrets/${sandboxSecrets.find((secret) => secret.id === secretId)?.name}`,
@@ -232,9 +241,31 @@ export function ProjectsPage({ request }: { request: Request }) {
   };
   const inspect = async (workspace: RecordItem) =>
     setInspection(await request(`/api/workspaces/${workspace.id}/inspect`));
+  const workspaceText = async (workspace: RecordItem, kind: "diff" | "logs") => {
+    const result = await request(`/api/workspaces/${workspace.id}/${kind}`);
+    setWorkspaceOutput({ title: `${workspace.label} ${kind}`, content: result[kind] || "No output." });
+  };
+  const gitOperation = async (workspace: RecordItem, operation: string, message?: string) => {
+    try {
+      const result = await request(`/api/workspaces/${workspace.id}/git/${operation}`, {
+        method: "POST",
+        body: message ? JSON.stringify({ message }) : undefined,
+      });
+      setWorkspaceOutput({
+        title: `${workspace.label}: git ${operation}`,
+        content: result.stdout || result.stderr || "Completed.",
+      });
+      if (selected) await select(selected);
+    } catch (reason) {
+      setWorkspaceOutput({
+        title: `${workspace.label}: git ${operation}`,
+        content: reason instanceof Error ? reason.message : "Git operation failed",
+      });
+    }
+  };
   const release = async (workspace: RecordItem) => {
     if (!selected) return;
-    await request(`/api/workspaces/${workspace.id}`, { method: "DELETE" });
+    await request(`/api/workspaces/${workspace.id}/release`, { method: "POST" });
     await select(selected);
     await load();
   };
@@ -272,6 +303,8 @@ export function ProjectsPage({ request }: { request: Request }) {
           </select>
           <input name="repository" placeholder="Repository URL" />
           <input name="defaultBranch" defaultValue="main" />
+          <input name="gitAuthorName" placeholder="Git author name" />
+          <input name="gitAuthorEmail" type="email" placeholder="Git author email" />
           <input name="baseUrl" type="url" placeholder="Provider URL (for repository browser)" />
           <input name="token" type="password" placeholder="Temporary provider token" />
           <Button
@@ -419,6 +452,17 @@ export function ProjectsPage({ request }: { request: Request }) {
                     name="caches"
                     defaultValue={JSON.stringify(selected.sandboxDefaults?.caches ?? {})}
                     placeholder="Shared package caches JSON"
+                  />
+                  <input
+                    name="gitAuthorName"
+                    defaultValue={selected.sandboxDefaults?.gitIdentity?.name}
+                    placeholder="Git author name"
+                  />
+                  <input
+                    name="gitAuthorEmail"
+                    type="email"
+                    defaultValue={selected.sandboxDefaults?.gitIdentity?.email}
+                    placeholder="Git author email"
                   />
                   <label className="flex items-center gap-2 text-sm">
                     <input
@@ -744,7 +788,10 @@ export function ProjectsPage({ request }: { request: Request }) {
                         <div>
                           <p className="font-medium">{workspace.label}</p>
                           <p className="text-xs text-slate-500">
-                            {workspace.branch} · {workspace.handle}
+                            {workspace.branch} · {workspace.handle} · {workspace.sandboxState}
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            Last activity: {new Date(workspace.lastActivity).toLocaleString()}
                           </p>
                         </div>
                         <div className="flex flex-wrap gap-1">
@@ -758,6 +805,29 @@ export function ProjectsPage({ request }: { request: Request }) {
                           <Button variant="outline" size="sm" onClick={() => void inspect(workspace)}>
                             Inspect
                           </Button>
+                          <Button variant="outline" size="sm" onClick={() => void workspaceText(workspace, "diff")}>
+                            Diff
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => void workspaceText(workspace, "logs")}>
+                            Logs
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => void gitOperation(workspace, "fetch")}>
+                            Fetch
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => void gitOperation(workspace, "pull")}>
+                            Pull
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => void gitOperation(workspace, "push")}>
+                            Push
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => setGitTarget(workspace)}>
+                            Commit
+                          </Button>
+                          {selected.gitProvider !== "Generic" && selected.gitProvider !== "Local" && (
+                            <Button variant="outline" size="sm" onClick={() => setPrTarget(workspace)}>
+                              Pull request
+                            </Button>
+                          )}
                           <Button
                             variant="outline"
                             size="sm"
@@ -786,9 +856,79 @@ export function ProjectsPage({ request }: { request: Request }) {
                   ))}
                   {!workspaces.length && <p className="text-sm text-slate-500">No active workspaces.</p>}
                   {inspection && (
-                    <pre className="mt-3 max-h-64 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-300">
-                      {JSON.stringify(inspection, null, 2)}
-                    </pre>
+                    <div className="mt-3 rounded-lg bg-slate-950 p-3 text-xs text-slate-300">
+                      <p>Worktree: {inspection.worktreePath || "Unavailable"}</p>
+                      <p>
+                        Sandbox: {inspection.sandboxState} · Resources: {inspection.resourceUsage}
+                      </p>
+                      <p>Last activity: {new Date(inspection.lastActivity).toLocaleString()}</p>
+                      <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">
+                        {inspection.gitStatus || "Working tree clean"}
+                      </pre>
+                    </div>
+                  )}
+                  {workspaceOutput && (
+                    <div className="mt-3 rounded-lg bg-slate-950 p-3 text-xs text-slate-300">
+                      <p className="mb-2 font-medium">{workspaceOutput.title}</p>
+                      <pre className="max-h-64 overflow-auto whitespace-pre-wrap">{workspaceOutput.content}</pre>
+                    </div>
+                  )}
+                  {gitTarget && (
+                    <form
+                      className="mt-3 flex flex-wrap gap-2 rounded-lg border p-3"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        const message = String(new FormData(event.currentTarget).get("message"));
+                        void gitOperation(gitTarget, "commit", message);
+                        setGitTarget(null);
+                      }}
+                    >
+                      <input
+                        required
+                        name="message"
+                        maxLength={500}
+                        className="min-w-64 flex-1"
+                        placeholder="Commit message"
+                      />
+                      <Button>Commit staged changes</Button>
+                      <Button type="button" variant="outline" onClick={() => setGitTarget(null)}>
+                        Cancel
+                      </Button>
+                    </form>
+                  )}
+                  {prTarget && (
+                    <form
+                      className="mt-3 grid gap-2 rounded-lg border p-3"
+                      onSubmit={async (event) => {
+                        event.preventDefault();
+                        const form = new FormData(event.currentTarget);
+                        try {
+                          const result = await request(`/api/workspaces/${prTarget.id}/pull-requests`, {
+                            method: "POST",
+                            body: JSON.stringify({ title: form.get("title"), body: form.get("body") }),
+                          });
+                          setWorkspaceOutput({
+                            title: `${result.provider} pull request created`,
+                            content: `${result.url || "Created"}${result.number ? ` (#${result.number})` : ""}`,
+                          });
+                        } catch (reason) {
+                          setWorkspaceOutput({
+                            title: `${selected.gitProvider} pull request failed`,
+                            content: reason instanceof Error ? reason.message : "Provider request failed",
+                          });
+                        }
+                        setPrTarget(null);
+                      }}
+                    >
+                      <input required name="title" maxLength={255} placeholder="Pull-request title" />
+                      <textarea name="body" maxLength={10000} placeholder="Description" />
+                      <div className="flex gap-2">
+                        <Button>Create pull request</Button>
+                        <Button type="button" variant="outline" onClick={() => setPrTarget(null)}>
+                          Cancel
+                        </Button>
+                      </div>
+                    </form>
                   )}
                 </div>
               </div>

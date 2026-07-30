@@ -317,6 +317,21 @@ function validateSandboxPolicy(policy: Record<string, unknown>) {
     throw new Error("Sandbox home size is invalid");
   return policy;
 }
+function validateGitIdentity(policy: Record<string, unknown>) {
+  const identity = policy.gitIdentity;
+  if (identity === undefined) return;
+  if (!identity || typeof identity !== "object" || Array.isArray(identity))
+    throw new Error("Git author identity is invalid");
+  const { name, email } = identity as Record<string, unknown>;
+  if (
+    typeof name !== "string" ||
+    !name.trim() ||
+    /[\r\n]/.test(name) ||
+    typeof email !== "string" ||
+    !z.string().email().safeParse(email).success
+  )
+    throw new Error("Git author identity needs a name and valid email address");
+}
 function gitHeaders(provider: GitProvider, accessToken: string): Record<string, string> {
   return provider === "GitLab" ? { "PRIVATE-TOKEN": accessToken } : { Authorization: `Bearer ${accessToken}` };
 }
@@ -625,6 +640,73 @@ function commandOutput(command: string[], timeout = 60000) {
   const process = Bun.spawnSync(command, { timeout });
   if (process.exitCode !== 0) throw new Error(process.stderr.toString() || `Command failed with ${process.exitCode}`);
   return process.stdout.toString();
+}
+function workspaceRoot() {
+  return process.env.WORKSPACE_ROOT ?? "/var/lib/subpolar/workspaces";
+}
+function assertWorkspacePath(path: string) {
+  const root = workspaceRoot();
+  if (!path.startsWith(`${root}/`) || path.slice(root.length + 1).includes("/.."))
+    throw new Error("Workspace path is outside the managed workspace root");
+  return path;
+}
+async function projectGitEnvironment(project: RecordData) {
+  const integration = ((project.sandboxDefaults ?? {}) as Record<string, any>).gitIntegration as
+    { credentialId?: string } | undefined;
+  if (!integration?.credentialId) return {};
+  let repository: URL;
+  try {
+    repository = new URL(String(project.repository));
+  } catch {
+    throw new Error("Git credentials require an HTTPS repository URL");
+  }
+  if (repository.protocol !== "https:") throw new Error("Git credentials require an HTTPS repository URL");
+  const credential = await one("credentials", integration.credentialId);
+  const accessToken = await decryptSecret(String(credential.ciphertext));
+  const identity =
+    project.gitProvider === "GitHub"
+      ? `x-access-token:${accessToken}`
+      : project.gitProvider === "GitLab"
+        ? `oauth2:${accessToken}`
+        : `${accessToken}:`;
+  return {
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: `http.${repository.origin}/.extraheader`,
+    GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(identity).toString("base64")}`,
+  };
+}
+async function workspaceGit(
+  workspace: RecordData,
+  operation: "status" | "diff" | "log" | "branch" | "commit" | "fetch" | "pull" | "push",
+  message?: string,
+) {
+  const project = await one("projects", String(workspace.projectId));
+  const path = assertWorkspacePath(String(workspace.worktreePath));
+  const args = ["git", "-C", path];
+  if (operation === "commit") {
+    const identity = ((project.sandboxDefaults ?? {}) as Record<string, any>).gitIdentity as
+      { name?: string; email?: string } | undefined;
+    if (!identity?.name || !identity.email)
+      throw new Error("Configure the project Git author name and email before committing");
+    args.push("-c", `user.name=${identity.name}`, "-c", `user.email=${identity.email}`, "commit", "-m", message!);
+  } else {
+    const operations = {
+      status: ["status", "--short", "--branch"],
+      diff: ["diff", "--stat"],
+      log: ["log", "--oneline", "-20"],
+      branch: ["branch", "--show-current"],
+      fetch: ["fetch", "origin"],
+      pull: ["pull", "--ff-only", "origin", String(project.defaultBranch)],
+      push: ["push", "origin", "HEAD"],
+    } as const;
+    args.push(...operations[operation]);
+  }
+  const result = Bun.spawnSync(args, {
+    timeout: 60_000,
+    env: { ...process.env, ...(await projectGitEnvironment(project)) },
+  });
+  await pb.collection("workspaces").update(workspace.id, { lastActivity: new Date().toISOString() });
+  return { exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
 }
 async function sandboxArgs(worktreePath: string, handle: string, projectId: string, policy: Record<string, unknown>) {
   validateSandboxPolicy(policy);
@@ -1313,6 +1395,7 @@ app.post("/api/projects", async (c) => {
     })
     .parse(await c.req.json());
   validateSandboxPolicy(input.sandboxDefaults);
+  validateGitIdentity(input.sandboxDefaults);
   const project = await pb.collection("projects").create({ ...input, ownerId: user.id });
   if (input.createDefaultDeveloperRole)
     await pb.collection("roles").create({
@@ -1333,6 +1416,7 @@ app.post("/api/projects", async (c) => {
         "git.push",
         "pull_request.create",
         "workspace.create",
+        "workspace.cleanup",
       ],
       toolIds: [],
       sandboxPolicy: input.sandboxDefaults,
@@ -1433,7 +1517,10 @@ app.patch("/api/projects/:id", async (c) => {
       sandboxDefaults: z.record(z.unknown()).optional(),
     })
     .parse(await c.req.json());
-  if (input.sandboxDefaults) validateSandboxPolicy(input.sandboxDefaults);
+  if (input.sandboxDefaults) {
+    validateSandboxPolicy(input.sandboxDefaults);
+    validateGitIdentity(input.sandboxDefaults);
+  }
   const project = await pb.collection("projects").update(c.req.param("id"), input);
   await audit(user.id, "update_project", project.id, input);
   return c.json(await projectView(json(project) as unknown as RecordData));
@@ -1606,6 +1693,27 @@ app.get("/api/workspaces/:id/logs", async (c) => {
   const result = Bun.spawnSync(["docker", "logs", "--tail", "500", String(workspace.sandboxId)], { timeout: 60_000 });
   return c.json({ logs: result.stdout.toString() + result.stderr.toString() });
 });
+app.post("/api/workspaces/:id/git/:operation", async (c) => {
+  const user = await requireUser(c, true);
+  if (!user) return c.json({ error: "Forbidden" }, 403);
+  const operation = c.req.param("operation");
+  if (!(["status", "diff", "log", "branch", "commit", "fetch", "pull", "push"] as string[]).includes(operation))
+    return c.json({ error: "Unsupported Git operation" }, 404);
+  const input =
+    operation === "commit" ? z.object({ message: z.string().min(1).max(500) }).parse(await c.req.json()) : {};
+  try {
+    const workspace = await one("workspaces", c.req.param("id"));
+    const result = await workspaceGit(
+      workspace,
+      operation as Parameters<typeof workspaceGit>[1],
+      "message" in input && typeof input.message === "string" ? input.message : undefined,
+    );
+    await audit(user.id, `git_${operation}`, workspace.id);
+    return c.json(result, result.exitCode === 0 ? 200 : 422);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Git operation failed" }, 422);
+  }
+});
 const createWorkspace = async (c: Context) => {
   const user = await requireUser(c, true);
   const input = z
@@ -1735,15 +1843,45 @@ app.post("/api/workspaces/:id/stop", async (c) => {
   await audit(user.id, "stop_workspace", workspace.id);
   return c.json(json(updated));
 });
+async function releaseWorkspace(workspace: RecordData) {
+  const path = assertWorkspacePath(String(workspace.worktreePath));
+  const project = await one("projects", String(workspace.projectId));
+  if (workspace.sandboxId) Bun.spawnSync(["docker", "rm", "-f", String(workspace.sandboxId)], { timeout: 60_000 });
+  if (project.repository) {
+    const repositoryPath = `${workspaceRoot()}/repositories/${project.id}.git`;
+    const result = Bun.spawnSync(["git", "--git-dir", repositoryPath, "worktree", "remove", "--force", path], {
+      timeout: 60_000,
+    });
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString() || "Unable to remove Git worktree");
+  } else {
+    const result = Bun.spawnSync(["rmdir", path], { timeout: 60_000 });
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString() || "Unable to remove local workspace");
+  }
+  await pb.collection("workspaces").delete(workspace.id);
+}
+app.post("/api/workspaces/:id/release", async (c) => {
+  const user = await requireUser(c, true);
+  if (!user) return c.json({ error: "Forbidden" }, 403);
+  const workspace = await one("workspaces", c.req.param("id"));
+  try {
+    await releaseWorkspace(workspace);
+    await audit(user.id, "release_workspace", workspace.id);
+    return c.body(null, 204);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Workspace release failed" }, 422);
+  }
+});
 app.delete("/api/workspaces/:id", async (c) => {
   const user = await requireUser(c, true);
   if (!user) return c.json({ error: "Forbidden" }, 403);
   const workspace = await one("workspaces", c.req.param("id"));
-  if (workspace.sandboxId) Bun.spawnSync(["docker", "rm", "-f", String(workspace.sandboxId)]);
-  if (workspace.worktreePath) Bun.spawnSync(["rm", "-rf", String(workspace.worktreePath)]);
-  await pb.collection("workspaces").delete(workspace.id);
-  await audit(user.id, "delete_workspace", workspace.id);
-  return c.body(null, 204);
+  try {
+    await releaseWorkspace(workspace);
+    await audit(user.id, "release_workspace", workspace.id);
+    return c.body(null, 204);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Workspace release failed" }, 422);
+  }
 });
 app.delete("/api/projects/:id", async (c) => {
   const user = await requireUser(c, true);
@@ -1880,6 +2018,20 @@ async function authorizedWorkspace(c: Context, capability: string) {
   await pb.collection("workspace_credentials").update(scoped.credential.id, { lastUsed: new Date().toISOString() });
   return scoped.workspace;
 }
+app.post("/api/v1/workspaces/:handle/release", async (c) => {
+  const scoped = await workspaceForCredential(c);
+  if (!scoped) return c.json({ error: "Unauthorized" }, 401);
+  const role = await one("roles", String(scoped.workspace.roleId));
+  if (!(role.capabilities as string[]).includes("workspace.cleanup")) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    await releaseWorkspace(scoped.workspace);
+    await pb.collection("workspace_credentials").update(scoped.credential.id, { lastUsed: new Date().toISOString() });
+    await audit(scoped.credential.id, "release_workspace", scoped.workspace.id, { agentCreated: true });
+    return c.body(null, 204);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Workspace release failed" }, 422);
+  }
+});
 app.post("/api/v1/workspaces/:handle/tools/:tool", async (c) => {
   const workspace = await authorizedWorkspace(c, "external.tools");
   if (!workspace) return c.json({ error: "Unauthorized" }, 401);
@@ -1957,23 +2109,20 @@ app.post("/api/v1/workspaces/:handle/git/:operation", async (c) => {
   const capability = `git.${operation}`;
   const workspace = await authorizedWorkspace(c, capability);
   if (!workspace) return c.json({ error: "Unauthorized" }, 401);
-  const accepted: Record<string, string[]> = {
-    status: ["status", "--short"],
-    diff: ["diff"],
-    log: ["log", "--oneline", "-20"],
-    branch: ["branch", "--show-current"],
-    fetch: ["fetch"],
-    pull: ["pull", "--ff-only"],
-    push: ["push"],
-  };
-  let args = accepted[operation];
-  if (operation === "commit") {
-    const { message } = z.object({ message: z.string().min(1).max(500) }).parse(await c.req.json());
-    args = ["commit", "-m", message];
+  if (!(["status", "diff", "log", "branch", "commit", "fetch", "pull", "push"] as string[]).includes(operation))
+    return c.json({ error: "Unsupported Git operation" }, 404);
+  const input =
+    operation === "commit" ? z.object({ message: z.string().min(1).max(500) }).parse(await c.req.json()) : {};
+  try {
+    const result = await workspaceGit(
+      workspace,
+      operation as Parameters<typeof workspaceGit>[1],
+      "message" in input && typeof input.message === "string" ? input.message : undefined,
+    );
+    return c.json(result, result.exitCode === 0 ? 200 : 422);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Git operation failed" }, 422);
   }
-  if (!args) return c.json({ error: "Unsupported Git operation" }, 404);
-  const result = Bun.spawnSync(["git", "-C", String(workspace.worktreePath), ...args], { timeout: 60000 });
-  return c.json({ exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() });
 });
 app.post("/api/v1/workspaces/:handle/pull-requests", async (c) => {
   const workspace = await authorizedWorkspace(c, "pull_request.create");
@@ -2031,6 +2180,66 @@ app.post("/api/v1/workspaces/:handle/pull-requests", async (c) => {
     { url: result.html_url ?? result.web_url, number: result.number ?? result.iid, provider: project.gitProvider },
     201,
   );
+});
+app.post("/api/workspaces/:id/pull-requests", async (c) => {
+  const user = await requireUser(c, true);
+  if (!user) return c.json({ error: "Forbidden" }, 403);
+  const input = z
+    .object({ title: z.string().min(1).max(255), body: z.string().max(10000).default("") })
+    .parse(await c.req.json());
+  const workspace = await one("workspaces", c.req.param("id"));
+  const project = await one("projects", String(workspace.projectId));
+  const integration = ((project.sandboxDefaults ?? {}) as Record<string, any>).gitIntegration as
+    { baseUrl?: string; credentialId?: string } | undefined;
+  if (!integration?.baseUrl || !integration.credentialId)
+    return c.json({ error: `${project.gitProvider} integration is not configured` }, 422);
+  const repository = String(project.repository).replace(/\.git$/, "");
+  const match = repository.match(/(?:https?:\/\/[^/]+\/|git@[^:]+:)(.+?)\/?$/);
+  if (!match) return c.json({ error: "Repository URL cannot be parsed for this Git provider" }, 422);
+  const accessToken = await decryptSecret(String((await one("credentials", integration.credentialId)).ciphertext));
+  const headers = {
+    ...gitHeaders(project.gitProvider as GitProvider, accessToken),
+    "Content-Type": "application/json",
+    Accept: "application/json",
+  };
+  const endpoint =
+    project.gitProvider === "GitLab"
+      ? `${integration.baseUrl}/api/v4/projects/${encodeURIComponent(match[1])}/merge_requests`
+      : project.gitProvider === "Gitea"
+        ? `${integration.baseUrl}/api/v1/repos/${match[1]}/pulls`
+        : `${integration.baseUrl}/repos/${match[1]}/pulls`;
+  const payload =
+    project.gitProvider === "GitLab"
+      ? {
+          title: input.title,
+          description: input.body,
+          source_branch: workspace.branch,
+          target_branch: project.defaultBranch,
+        }
+      : { title: input.title, body: input.body, head: workspace.branch, base: project.defaultBranch };
+  try {
+    const response = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(payload) });
+    const result = await response.json().catch(() => ({}) as Record<string, unknown>);
+    if (!response.ok)
+      return c.json(
+        {
+          error: `${project.gitProvider} returned ${response.status}`,
+          providerStatus: response.status,
+          provider: result,
+        },
+        422,
+      );
+    await audit(user.id, "create_pull_request", workspace.id, { provider: project.gitProvider });
+    return c.json(
+      { url: result.html_url ?? result.web_url, number: result.number ?? result.iid, provider: project.gitProvider },
+      201,
+    );
+  } catch (error) {
+    return c.json(
+      { error: `${project.gitProvider} request failed: ${error instanceof Error ? error.message : "unknown error"}` },
+      422,
+    );
+  }
 });
 
 app.use("/*", serveStatic({ root: "./dist" }));
